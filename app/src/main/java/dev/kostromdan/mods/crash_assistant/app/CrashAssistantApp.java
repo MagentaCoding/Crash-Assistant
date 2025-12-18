@@ -13,6 +13,7 @@ import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantCo
 import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantLocalConfig;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LanguageProvider;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListDiff;
+import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListUtils;
 import dev.kostromdan.mods.crash_assistant.common_config.platform.PlatformHelp;
 import dev.kostromdan.mods.crash_assistant.common_config.utils.JavaBinaryLocator;
 import dev.kostromdan.mods.crash_assistant.common_config.utils.ProcessHelper;
@@ -29,6 +30,7 @@ import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 public class CrashAssistantApp {
     public static final Logger LOGGER = LogManager.getLogger(CrashAssistantApp.class);
@@ -49,6 +51,7 @@ public class CrashAssistantApp {
     public static boolean closeFunctionFailed = false;
     public static boolean emergencySaveFired = false;
     public static long terminatedProcessesLocationEndTime = 0;
+    public static String customLatestLogPath = null;
 
 
     public static void main(String[] args) {
@@ -90,6 +93,9 @@ public class CrashAssistantApp {
             } else if ("-childProcessesPIDs".equals(args[i]) && i + 1 < args.length) {
                 PlatformHelp.childProcessesPIDs = new String(Base64.getDecoder().decode(args[i + 1]), StandardCharsets.UTF_8);
                 LOGGER.info("childProcessesPIDs: {}", PlatformHelp.childProcessesPIDs);
+            } else if ("-customLatestLogPath".equals(args[i]) && i + 1 < args.length) {
+                customLatestLogPath = args[i + 1];
+                LOGGER.info("customLatestLogPath: {}", customLatestLogPath);
             }
         }
         LOGGER.info("Boot.serialisedGPUs:\n{}", Boot.serialisedGPUs);
@@ -217,7 +223,12 @@ public class CrashAssistantApp {
 
         new Thread(LanguageProvider::updateLang).start(); // Init lang async.
 
-        LogsList.addIfExistsAndModified(new Log(LogType.LOG, Paths.get("logs", "latest.log")));
+        if (customLatestLogPath != null) {
+            ModListUtils.MODS_FOLDER = Paths.get(customLatestLogPath).getParent().getParent().resolve("mods").resolve("fabric-" + PlatformHelp.minecraftVersion);
+            LOGGER.info("ModListUtils.MODS_FOLDER: {}", ModListUtils.MODS_FOLDER);
+        }
+
+        LogsList.addIfExistsAndModified(new Log(LogType.LOG, customLatestLogPath == null ? Paths.get("logs", "latest.log") : Paths.get(customLatestLogPath)));
         LogsList.addIfExistsAndModified(new Log(LogType.DEBUG_LOG, Paths.get("logs", "debug.log")));
 
         locateAndAddHsErr();
@@ -235,6 +246,23 @@ public class CrashAssistantApp {
                 path -> path.startsWith("disconnect-") && path.endsWith("-client.txt"));
         for (Path path : disconnectsClient) {
             LogsList.addIfExistsAndModified(new Log(LogType.DISCONNECT_CLIENT, path));
+        }
+
+
+        Log stderrLog = new Log(LogType.LAUNCHER_LOG, Paths.get("logs", "stderr_stream.log"));
+        long logSizeBytes = stderrLog.getFile().length();
+        LOGGER.info("stderr_stream.log size: {} bytes", logSizeBytes);
+        if (Files.isRegularFile(stderrLog.getPath()) && logSizeBytes >= 400) {
+            boolean add = true;
+            if (logSizeBytes < 1048576) {
+                stderrLog.getReader().readLogFileSafe();
+                String logContents = stderrLog.getReader().getAllLinesString();
+                if (logContents != null && !logContents.isEmpty()) {
+                    add = Pattern.compile("^.*\\bat\\s+\\S+", Pattern.MULTILINE)
+                            .matcher(logContents).find();
+                }
+            }
+            if (add) LogsList.addIfExistsAndModified(stderrLog);
         }
 
         LogsList.addIfExistsAndModified(new Log(LogType.LAUNCHER_LOG, "MinecraftLauncher: launcher_log.txt", Paths.get("launcher_log.txt")));
@@ -271,7 +299,7 @@ public class CrashAssistantApp {
         LogsList.addIfExistsAndModified(new Log(LogType.LAUNCHER_LOG, Paths.get("../../../logs", "PollyMC-0.log")));
 
         LogsList.addIfExistsAndModified(new Log(LogType.LAUNCHER_LOG, "Feather: latest.log", Paths.get("feather/logs", "latest.log")));
-        LogsList.addIfExistsAndModified(new Log(LogType.LAUNCHER_LOG, "Lunar: ichor-boot.log", Paths.get("logs", "ichor-boot.log")));
+        LogsList.addIfExistsAndModified(new Log(LogType.LAUNCHER_LOG, "Lunar: ichor-boot.log", customLatestLogPath == null ? Paths.get("logs", "ichor-boot.log") : Paths.get(customLatestLogPath).getParent().resolve("ichor-boot.log")));
         if (FileUtils.folderNLevelsUpperNameContains(2, "technic")) {
             FileUtils.getModifiedFiles(Paths.get("../../logs"), ".log").forEach(path -> {
                 LogsList.addIfExistsAndModified(new Log(LogType.LAUNCHER_LOG, path));

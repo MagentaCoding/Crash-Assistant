@@ -25,6 +25,9 @@ public class CrashAssistantConfig {
     private static final HashSet<String> usedOptions = new HashSet<>();
     private static long lastConfigUpdate;
 
+    private static final LinkedHashSet<String> canonicalSectionOrder = new LinkedHashSet<>();
+    private static final Map<String, LinkedHashSet<String>> canonicalKeysPerSection = new LinkedHashMap<>();
+
     static {
         executeWithLock(() -> {
             config = CommentedFileConfig.builder(CONFIG_PATH, TomlFormat.instance())
@@ -36,6 +39,10 @@ public class CrashAssistantConfig {
 
     private static void setupDefaultValues() {
         usedOptions.clear();
+
+        canonicalSectionOrder.clear();
+        canonicalKeysPerSection.clear();
+
         config.setComment("general", "General settings of Crash Assistant mod.");
         if (Objects.equals(config.get("general.help_link"), "https://discord.gg/moddedmc")) {
             config.remove("general.help_link");
@@ -87,6 +94,11 @@ public class CrashAssistantConfig {
                         "So this option prevents our app logging at all.\n" +
                         "HIGHLY UNRECOMMENDED to disable! Contains many useful info.",
                 false);
+        addOption("general.generate_own_launcher_log",
+                "Generates \"logs/stderr_stream.log\" with stderr stream.\n" +
+                        "Since many launchers are not saving this info, which is extremely helpful for debugging some crashes.\n" +
+                        "As only where crash reason is present. Keeps original stream untouched, just logs it to a file.",
+                true);
         addOption("general.logs_priority_overrides",
                 "Here you can change priority for logs.\n" +
                         "For example if you want crash report to be shown earlier than latest.log in the available logs list.\n" +
@@ -102,6 +114,18 @@ public class CrashAssistantConfig {
             blacklistedLogs.remove("CrashAssistant: latest.log");
             config.set("general.blacklisted_logs", blacklistedLogs);
         }
+
+        config.setComment("simple_mode", "A simplified GUI that hides the logs list until the user opts into Expert Mode.");
+        addOption("simple_mode.enabled",
+                "If enabled, the GUI starts in simple mode with logs hidden and a single \"Show Logs (Expert Mode)\" button.\n" +
+                        "Disabled by default.",
+                false);
+        addOption("simple_mode.prevent_for_modpack_creators",
+                "If true, modpack creators always see the Expert Mode with logs visible, even if simple mode is enabled.",
+                true);
+        addOption("simple_mode.hide_modlist_section",
+                "If true, hides the mod list changes section while simple mode is active.",
+                false);
 
         config.setComment("text", "Here you can change text of lang placeHolders.\n" +
                 "Also you can change any text in lang files.\n" +
@@ -175,6 +199,9 @@ public class CrashAssistantConfig {
                 "With this option, you can customize how links from individual upload buttons are copied, there\n" +
                         "log was split to the 2 parts (head and tail, due to too large size for single upload), but user decided to copy message with both.",
                 "$LOG_NAME$[$FILE_NAME$ <TOLOWER>$MSG_LANG.gui.split_log_dialog_head$</TOLOWER>](<$LINK_FIRST_LINES$>) / [<TOLOWER>$MSG_LANG.gui.split_log_dialog_tail$</TOLOWER>](<$LINK_LAST_LINES$>) $TOO_BIG_REASONS$");
+        addOption("copied_links.skip_split_dialog",
+                "If enabled, disables the head/tail selection dialog for split logs on individual uploads and always copies message with both links.",
+                false);
 
         config.setComment("modpack_modlist", "Settings of modlist feature.\n" +
                 "Adds in generated msg block about which mods modpack user added/removed/updated.\n" +
@@ -207,6 +234,22 @@ public class CrashAssistantConfig {
         addOption("modpack_modlist.add_modlist_txt_as_log",
                 "If enabled, will add generated modlist.txt, with names of all mods / modids / mixin configs / jarjar mods info to logs.",
                 true);
+
+        config.setComment("too_many_changes_warning",
+                "Settings of too many changes warning feature.\n" +
+                        "Notifies end users of the modpack and saying they made too many changes to the modpack.\n" +
+                        "Not displayed to the modpack creators.");
+        addOption("too_many_changes_warning.count",
+                "Set to the positive integer to enable feature. Set to negative integer to disable.\n" +
+                        "How many changes end user should make for warning to be displayed.",
+                -1);
+        addOption("too_many_changes_warning.formulation_type",
+                "With this option, you can select the formulation of this warning, currently supported:\n" +
+                        "   - NOTIFY: Just saying to the end user that what they made many changes and adding random mods or clicking\n" +
+                        "the \"Update All\" button is not a good idea without proper testing. It is expected to crash.\n" +
+                        "   - DROP_SUPPORT: Saying what you are not providing support for that amount of changes, suggesting the end user to\n" +
+                        "re-install modpack or they are on their own with that amount of changes.",
+                "NOTIFY");
 
         config.setComment("analysis", "Settings of analysis feature.\n" +
                 "Analysing logs for most common reasons of crashes and displaying recommendations with fixes.");
@@ -267,6 +310,9 @@ public class CrashAssistantConfig {
         addOption("gui_customisation.request_help_button_font_size",
                 "Same as upload_all_button_font_size, but for Request Help button.",
                 16);
+        addOption("gui_customisation.simple_mode_button_font_size",
+                "Same as upload_all_button_font_size, but for the Simple Mode toggle button.",
+                16);
         addOption("gui_customisation.upload_all_button_foreground_color",
                 "You can change Upload All Button color to request user attention.\n" +
                         "format is \"R_G_B\", range is 0-255, for example \"255_0_0\" is red color. Use \"default\" to use default swing color.\n" +
@@ -275,6 +321,9 @@ public class CrashAssistantConfig {
         addOption("gui_customisation.request_help_button_foreground_color",
                 "Same as upload_all_button_foreground_color, but for Request Help button.\n" +
                         "Default for this button is \"0_0_178\" (dark blue color).",
+                "0_0_178");
+        addOption("gui_customisation.simple_mode_button_foreground_color",
+                "Same as upload_all_button_foreground_color, but for the Simple Mode toggle button.",
                 "0_0_178");
         addOption("gui_customisation.auto_fix_button_font_size",
                 "Same as upload_all_button_font_size, but for Auto-Fix button (in integrated GPU warning).",
@@ -294,17 +343,22 @@ public class CrashAssistantConfig {
                         "- If you have some long text in the discord description, you will love the small one.\n" +
                         "- If the text is short, you will love the large one.",
                 false);
-        addOption("gui_customisation.modpack_logo_size",
-                "Hardcode modpack logo size. Default is -1, which means it's calculated automatically.\n" +
-                        "By default, this should not needed. But if you have heavily customized GUI, you may want to decrease its size, so this option could be needed in such case. ",
+        addOption("gui_customisation.limit_modpack_logo_height",
+                "Limit modpack logo height. Default is -1, which means it's calculated automatically.\n" +
+                        "By default, this should not be needed. But if you have heavily customized GUI or using\n" +
+                        "a rectangle logo instead of square, you may want to decrease its size, so this option could be needed in such case. ",
                 -1);
+        addOption("gui_customisation.modpack_logo_aligned_center",
+                "This option would be needed only if you limited modpack logo height.\n" +
+                        "Otherwise, the logo will consume all available horizontal space.\n" +
+                        "If true, the logo will be centered. If false, it will be aligned to the top. ",
+                true);
 
         config.setComment("compatibility", "Checks crash_assistant compatibility with other incompatible mods.\n" +
                 "Highly unrecommended to disable!");
         addOption("compatibility.enabled",
                 "Enable feature.",
                 true);
-
 
         HashSet<String> toRemove = new HashSet<>();
         config.valueMap().forEach((key, value) -> {
@@ -329,6 +383,20 @@ public class CrashAssistantConfig {
     private static <T> void addOption(String path, String comment, T defaultValue) {
         usedOptions.add(path);
         usedOptions.add(path.split("\\.")[0]);
+
+        // Record canonical order (section + immediate child key)
+        String[] parts = path.split("\\.", 2);
+        String section = parts[0];
+        canonicalSectionOrder.add(section);
+        if (parts.length > 1) {
+            String sub = parts[1];
+            int dot = sub.indexOf('.');
+            if (dot >= 0) sub = sub.substring(0, dot);
+            canonicalKeysPerSection
+                    .computeIfAbsent(section, s -> new LinkedHashSet<>())
+                    .add(sub);
+        }
+
         config.setComment(path, comment);
         if (!config.contains(path)) {
             config.set(path, defaultValue);
@@ -367,7 +435,6 @@ public class CrashAssistantConfig {
     public static Path getConfigPath() {
         return CONFIG_PATH;
     }
-
 
     public static void executeWithLock(Runnable body) {
         Exception ex = null;
@@ -423,8 +490,16 @@ public class CrashAssistantConfig {
             }
             int old_values_hash = config.valueMap().hashCode();
             long old_comments_hash = getCommentsHash();
-            setupDefaultValues();
-            if (config.valueMap().hashCode() != old_values_hash || getCommentsHash() != old_comments_hash) {
+            long old_order_hash = getOrderHash();
+
+            setupDefaultValues(); // fills canonical order and adds/removes keys
+
+            // Detect misalignment and restore canonical order if needed
+            if (!isCanonicalOrderAligned()) {
+                enforceCanonicalOrder();
+            }
+
+            if (config.valueMap().hashCode() != old_values_hash || getCommentsHash() != old_comments_hash || getOrderHash() != old_order_hash) {
                 save();
             }
             lastConfigUpdate = CONFIG_PATH.toFile().lastModified();
@@ -441,6 +516,94 @@ public class CrashAssistantConfig {
             }
         }
         return hash;
+    }
+
+    private static long getOrderHash() {
+        List<String> tokens = new ArrayList<>();
+        for (Map.Entry<String, Object> e : config.valueMap().entrySet()) {
+            String top = e.getKey();
+            tokens.add("#" + top);
+            Object v = e.getValue();
+            if (v instanceof AbstractCommentedConfig) {
+                AbstractCommentedConfig sec = (AbstractCommentedConfig) v;
+                for (String k : sec.valueMap().keySet()) {
+                    tokens.add(top + "." + k);
+                }
+            }
+        }
+        return tokens.hashCode();
+    }
+
+    private static boolean isCanonicalOrderAligned() {
+        // Root sections: compare current order filtered to canonical vs canonical filtered to present
+        List<String> currentRoot = new ArrayList<>();
+        for (Map.Entry<String, Object> e : config.valueMap().entrySet()) {
+            if (e.getValue() instanceof AbstractCommentedConfig) {
+                currentRoot.add(e.getKey());
+            }
+        }
+        List<String> currentRootCanonOnly = new ArrayList<>();
+        for (String s : currentRoot) if (canonicalSectionOrder.contains(s)) currentRootCanonOnly.add(s);
+
+        List<String> canonicalRootPresent = new ArrayList<>();
+        for (String s : canonicalSectionOrder) if (currentRoot.contains(s)) canonicalRootPresent.add(s);
+
+        if (!currentRootCanonOnly.equals(canonicalRootPresent)) return false;
+
+        // Per-section keys
+        for (String section : canonicalRootPresent) {
+            Object v = config.get(section);
+            if (!(v instanceof AbstractCommentedConfig)) continue;
+            AbstractCommentedConfig sec = (AbstractCommentedConfig) v;
+
+            List<String> now = new ArrayList<>(sec.valueMap().keySet());
+            LinkedHashSet<String> canonSet = canonicalKeysPerSection.getOrDefault(section, new LinkedHashSet<>());
+
+            List<String> nowCanonOnly = new ArrayList<>();
+            for (String k : now) if (canonSet.contains(k)) nowCanonOnly.add(k);
+
+            List<String> canonPresent = new ArrayList<>();
+            for (String k : canonSet) if (now.contains(k)) canonPresent.add(k);
+
+            if (!nowCanonOnly.equals(canonPresent)) return false;
+        }
+        return true;
+    }
+
+    private static void enforceCanonicalOrder() {
+        // Reorder root sections to canonical (present-only)
+        List<String> desiredRoot = new ArrayList<>();
+        for (String s : canonicalSectionOrder) {
+            if (config.valueMap().containsKey(s)) desiredRoot.add(s);
+        }
+        reorderMap(config.valueMap(), desiredRoot);
+
+        // Reorder each section's keys to canonical (present-only)
+        for (String section : desiredRoot) {
+            Object v = config.get(section);
+            if (!(v instanceof AbstractCommentedConfig)) continue;
+            AbstractCommentedConfig sec = (AbstractCommentedConfig) v;
+
+            LinkedHashSet<String> canon = canonicalKeysPerSection.getOrDefault(section, new LinkedHashSet<>());
+            List<String> desiredKeys = new ArrayList<>();
+            for (String k : canon) if (sec.valueMap().containsKey(k)) desiredKeys.add(k);
+            reorderMap(sec.valueMap(), desiredKeys);
+        }
+    }
+
+    private static void reorderMap(Map<String, Object> map, List<String> desiredOrder) {
+        // Rebuild map in the desired order; append any leftovers at the end (shouldn't be any after cleanup)
+        LinkedHashMap<String, Object> old = new LinkedHashMap<>(map);
+        map.clear();
+        for (String k : desiredOrder) {
+            if (old.containsKey(k)) {
+                map.put(k, old.remove(k));
+            }
+        }
+        // append leftovers if any (safety)
+        for (Map.Entry<String, Object> e : old.entrySet()) {
+            map.put(e.getKey(), e.getValue());
+        }
     }
 
     public static void save() {

@@ -8,9 +8,11 @@ import dev.kostromdan.mods.crash_assistant.common_config.config.ProblematicModsC
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.IncompatibleMod;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.Mod;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModDataParser;
+import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListUtils;
 import dev.kostromdan.mods.crash_assistant.common_config.platform.PlatformHelp;
 import dev.kostromdan.mods.crash_assistant.common_config.utils.ClassExistenceChecker;
 import dev.kostromdan.mods.crash_assistant.common_config.utils.JavaBinaryLocator;
+import dev.kostromdan.mods.crash_assistant.common_config.utils.LatestLogLocator;
 import dev.kostromdan.mods.crash_assistant.common_config.utils.ProcessHelper;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -37,6 +39,8 @@ public class JarInJarHelper {
         }
         isClient = true;
         try {
+            if (CrashAssistantConfig.getBoolean("general.generate_own_launcher_log")) LauncherLogger.redirectToFile();
+
             Path originalModJarPath = Paths.get(LibrariesJarLocator.getOurModJarPath()).toAbsolutePath();
             LOGGER.info("Launching CrashAssistantApp ({})", originalModJarPath.getFileName().toString());
 
@@ -61,6 +65,7 @@ public class JarInJarHelper {
             for (Class<?> clazz : ProcessHelper.getNeededForAppClasses()) {
                 classPathEntries.add(LibrariesJarLocator.getLibraryJarPath(clazz));
             }
+            fixIncorrectJnaPlatform(classPathEntries);
             String fullClassPath = String.join(System.getProperty("path.separator"), classPathEntries);
 
             List<String> argsList = new ArrayList<>();
@@ -92,6 +97,14 @@ public class JarInJarHelper {
             argsList.add(Base64.getEncoder().encodeToString(ProcessHelper.getProcessorName().getBytes(StandardCharsets.UTF_8)));
             if (PlatformHelp.modLoadedWithConnector) {
                 argsList.add("-modLoadedWithConnector");
+            }
+            if (tempDir.toAbsolutePath().toString().contains(Paths.get("lunarclient", "offline", "multiver").toString()) &&
+                    ClassExistenceChecker.classExists("com.moonsworth.lunar.ichor.api.IchorAPI")) {
+                Path latestLog = LatestLogLocator.findLatestLogPath();
+                if (latestLog != null) {
+                    argsList.add("-customLatestLogPath");
+                    argsList.add(latestLog.toString());
+                }
             }
 
             Path argsFile = Paths.get("local", "crash_assistant", currentProcessData + "_args.info");
@@ -149,7 +162,7 @@ public class JarInJarHelper {
 
     public static List<Path> getModJarPathsContainingPart(String part) {
         try {
-            return Files.list(Paths.get("mods"))
+            return Files.list(ModListUtils.MODS_FOLDER)
                     .filter(path -> Files.isRegularFile(path) &&
                             path.getFileName().toString().toLowerCase().contains(part.toLowerCase()) &&
                             path.getFileName().toString().endsWith(".jar"))
@@ -519,5 +532,73 @@ public class JarInJarHelper {
             String formatted = String.format(Locale.US, "%.1f", mb).replace(".0", "");
             return formatted + "m"; // Convert to MB
         }
+    }
+
+    private static void fixIncorrectJnaPlatform(List<String> classPathEntries) {
+        if (classPathEntries == null || classPathEntries.size() < 2) {
+            return;
+        }
+
+        int firstIndex = -1;
+        int secondIndex = -1;
+
+        // 1. Find first pair of identical JNA entries: */jna/<version>/jna-<version>.jar
+        outer:
+        for (int i = 0; i < classPathEntries.size(); i++) {
+            String entryI = classPathEntries.get(i);
+            File fileI = new File(entryI);
+            String fileNameI = fileI.getName();
+
+            if (!fileNameI.startsWith("jna-") || fileNameI.startsWith("jna-platform-") || !fileNameI.endsWith(".jar")) {
+                continue;
+            }
+
+            for (int j = i + 1; j < classPathEntries.size(); j++) {
+                if (entryI.equals(classPathEntries.get(j))) {
+                    firstIndex = i;
+                    secondIndex = j;
+                    break outer;
+                }
+            }
+        }
+
+        if (firstIndex == -1) {
+            // No duplicate JNA entry found, nothing to fix.
+            return;
+        }
+
+        String original = classPathEntries.get(firstIndex);
+        File jnaJarFile = new File(original);
+
+        // Extract version from jna-<version>.jar
+        String fileName = jnaJarFile.getName(); // jna-<version>.jar
+        if (!fileName.startsWith("jna-") || !fileName.endsWith(".jar")) {
+            return;
+        }
+        String baseName = fileName.substring(0, fileName.length() - ".jar".length()); // jna-<version>
+        String version = baseName.substring("jna-".length()); // <version>
+
+        // 2. Resolve filesystem structure:
+        //    .../jna/<version>/jna-<version>.jar
+        //          ^versionDir
+        File versionDir = jnaJarFile.getParentFile();     // <version>
+        if (versionDir == null) return;
+        File jnaDir = versionDir.getParentFile();         // jna
+        if (jnaDir == null) return;
+        File jnaRoot = jnaDir.getParentFile();            // .../net/java/dev/jna
+        if (jnaRoot == null) return;
+
+        // 3. Build jna-platform path using same root + version
+        File jnaPlatformDir = new File(new File(jnaRoot, "jna-platform"), version);
+        File jnaPlatformJarFile = new File(jnaPlatformDir, "jna-platform-" + version + ".jar");
+
+        // 4. Check that resulting file exists; if not, do nothing.
+        if (!jnaPlatformJarFile.isFile()) {
+            return;
+        }
+
+        // 5. First stays JNA, second becomes JNA-Platform.
+        classPathEntries.set(firstIndex, original);
+        classPathEntries.set(secondIndex, jnaPlatformJarFile.getAbsolutePath());
     }
 }

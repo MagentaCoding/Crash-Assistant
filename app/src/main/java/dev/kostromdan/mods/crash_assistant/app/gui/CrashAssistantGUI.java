@@ -5,20 +5,25 @@ import dev.kostromdan.mods.crash_assistant.app.class_loading.Boot;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.CorruptedConfigFinderGUI;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.CorruptedJarFinderGUI;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.PackageFinderGUI;
+import dev.kostromdan.mods.crash_assistant.app.gui.analysis.dependencies.AzureLibDependenciesAnalysisGUI;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.dependencies.CreateDependenciesAnalysisGUI;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.dependencies.EpicFightDependenciesAnalysisGUI;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.dependencies.JdepsDependenciesAnalysisGUI;
 import dev.kostromdan.mods.crash_assistant.app.gui.analysis.MCreatorModDetectorGUI;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.*;
 import dev.kostromdan.mods.crash_assistant.app.utils.DragAndDrop;
+import dev.kostromdan.mods.crash_assistant.app.utils.HtmlToMarkdown;
 import dev.kostromdan.mods.crash_assistant.app.utils.TerminatedProcessesFinder;
 import dev.kostromdan.mods.crash_assistant.common_config.communication.ProcessSignalIO;
 import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantConfig;
+import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantLocalConfig;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.Lang;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LanguageProvider;
 import dev.kostromdan.mods.crash_assistant.common_config.loading_utils.JarInJarHelper;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.IncompatibleMod;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.Mod;
+import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListDiff;
+import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListUtils;
 import dev.kostromdan.mods.crash_assistant.common_config.platform.PlatformHelp;
 import dev.kostromdan.mods.crash_assistant.common_config.utils.ProcessHelper;
 
@@ -47,9 +52,12 @@ import java.util.stream.Collectors;
 
 public class CrashAssistantGUI {
     private static JFrame frame = null;
-    public static FileListPanel fileListPanel;
+    public static FileListPanel fileListPanel = null;
     private static ControlPanel controlPanel;
     private static JPanel labelPanel;
+    private static JScrollPane fileListScrollPane;
+    private static boolean simpleModeActive;
+    private static boolean hideModListInSimpleMode;
     private static final Map<JComponent, OriginalState> highlightedComponents = new ConcurrentHashMap<>();
 
     private static class OriginalState {
@@ -226,7 +234,7 @@ public class CrashAssistantGUI {
         // --- Configuration reading ---
         String logoPath = CrashAssistantConfig.get("gui_customisation.modpack_logo_path");
         boolean largeLogoMode = CrashAssistantConfig.getBoolean("gui_customisation.modpack_logo_large_mode");
-        int modpackLogoSize = CrashAssistantConfig.getInteger("gui_customisation.modpack_logo_size");
+        int modpackLogoHeightLimit = CrashAssistantConfig.getInteger("gui_customisation.limit_modpack_logo_height");
 
         // GIF support: choose the correct loader based on extension
         final boolean isGif = isGifPath(logoPath);
@@ -262,7 +270,7 @@ public class CrashAssistantGUI {
 
         // --- Panel Construction ---
         labelPanel = new JPanel(new BorderLayout()); // Main container for the top section
-        labelPanel.setBorder(BorderFactory.createEmptyBorder(3, 5, 3, 5));
+        labelPanel.setBorder(BorderFactory.createEmptyBorder(2, 5, 3, 5));
 
         JPanel mainTextPanel = new JPanel();
         mainTextPanel.setLayout(new BoxLayout(mainTextPanel, BoxLayout.Y_AXIS));
@@ -301,25 +309,30 @@ public class CrashAssistantGUI {
                 // Determine height for the logo to match the text block
                 int textHeight = leftColumn.getPreferredSize().height;
 
-                int maxW = (modpackLogoSize != -1) ? modpackLogoSize : 150;
-                int maxH = (modpackLogoSize != -1) ? modpackLogoSize : textHeight;
+                int maxW = 500;
+                int maxH = (modpackLogoHeightLimit != -1) ? Math.min(modpackLogoHeightLimit, textHeight) : textHeight;
 
                 if (animatedLogoIcon != null) {
-                    // GIF support: scale while preserving animation
                     modpackLogoLabel.setIcon(new ScaledImageIcon(animatedLogoIcon, maxW, maxH));
                 } else {
-                    // Static image path (existing behavior)
                     modpackLogoLabel.setIcon(resizeLogo(logoImage, maxW, maxH));
                 }
 
-                JPanel logoWrapper = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+                modpackLogoLabel.setVerticalAlignment(SwingConstants.CENTER);
+                modpackLogoLabel.setHorizontalAlignment(SwingConstants.CENTER);
+
+                JPanel logoWrapper = new JPanel();
+                logoWrapper.setLayout(new BoxLayout(logoWrapper, BoxLayout.Y_AXIS));
                 logoWrapper.setOpaque(false);
-                logoWrapper.setBorder(BorderFactory.createEmptyBorder(0, 5, 0, 0)); // Add padding
+                logoWrapper.setBorder(BorderFactory.createEmptyBorder(1, 5, 1, 0));
+                logoWrapper.add(Box.createVerticalGlue());
                 logoWrapper.add(modpackLogoLabel);
+                logoWrapper.add(Box.createVerticalGlue());
 
                 JPanel logoContainer = new JPanel(new BorderLayout());
                 logoContainer.setOpaque(false);
-                logoContainer.add(logoWrapper, BorderLayout.NORTH);
+                logoContainer.add(logoWrapper, CrashAssistantConfig.getBoolean("gui_customisation.modpack_logo_aligned_center") ? BorderLayout.CENTER : BorderLayout.NORTH);
+
                 labelPanel.add(logoContainer, BorderLayout.EAST);
 
             } else {
@@ -328,23 +341,25 @@ public class CrashAssistantGUI {
                 topRowPanel.add(mainTextPanel, BorderLayout.CENTER);
 
                 int textHeight = mainTextPanel.getPreferredSize().height;
-                int maxW = (modpackLogoSize != -1) ? modpackLogoSize : 150;
-                int maxH = (modpackLogoSize != -1) ? modpackLogoSize : (textHeight - 3);
+                int maxW = 500;
+                int maxH = (modpackLogoHeightLimit != -1) ? Math.min(modpackLogoHeightLimit, textHeight - 3) : (textHeight - 3);
 
                 if (animatedLogoIcon != null) {
-                    // GIF support: scale while preserving animation
                     modpackLogoLabel.setIcon(new ScaledImageIcon(animatedLogoIcon, maxW, maxH));
                 } else {
-                    // Static image path (existing behavior)
                     modpackLogoLabel.setIcon(resizeLogo(logoImage, maxW, maxH));
                 }
 
-                JPanel logoWrapper = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+                JPanel logoWrapper = new JPanel(new GridBagLayout());
                 logoWrapper.setOpaque(false);
-                logoWrapper.add(modpackLogoLabel);
+                GridBagConstraints logoGbc = new GridBagConstraints();
+                logoGbc.anchor = GridBagConstraints.CENTER;
+                logoWrapper.add(modpackLogoLabel, logoGbc);
                 JPanel logoContainer = new JPanel(new BorderLayout());
                 logoContainer.setOpaque(false);
-                logoContainer.add(logoWrapper, BorderLayout.NORTH);
+                boolean centerAligned = CrashAssistantConfig.getBoolean("gui_customisation.modpack_logo_aligned_center");
+                logoContainer.add(logoWrapper, centerAligned ? BorderLayout.CENTER : BorderLayout.NORTH);
+                logoContainer.setBorder(BorderFactory.createEmptyBorder(centerAligned ? 0 : 1, 0, 0, 0));
                 topRowPanel.add(logoContainer, BorderLayout.EAST);
 
                 JPanel contentPanel = new JPanel(new GridBagLayout());
@@ -359,7 +374,7 @@ public class CrashAssistantGUI {
 
                 if (showScreenshotNotice) {
                     gbc.gridy = 1;
-                    gbc.insets = new Insets(1, 0, 0, 0); // Reduced top padding from 3 to 1
+                    gbc.insets = new Insets(2, 0, 0, 0);
                     contentPanel.add(screenshotNoticePane, gbc);
                 }
                 labelPanel.add(contentPanel, BorderLayout.CENTER);
@@ -368,11 +383,20 @@ public class CrashAssistantGUI {
 
         frame.add(labelPanel, BorderLayout.NORTH);
 
-        fileListPanel = new FileListPanel();
-        frame.add(fileListPanel.getScrollPane(), BorderLayout.CENTER);
+        boolean preventForModpackCreators = CrashAssistantConfig.getBoolean("simple_mode.prevent_for_modpack_creators");
+        boolean isModpackCreator = ModListDiff.isModpackCreator();
+        boolean simpleModeAllowed = CrashAssistantConfig.getBoolean("simple_mode.enabled") && !(preventForModpackCreators && isModpackCreator);
+        boolean alwaysShowLogs = isAlwaysShowLogsEnabled();
+        hideModListInSimpleMode = CrashAssistantConfig.getBoolean("simple_mode.hide_modlist_section");
 
-        controlPanel = new ControlPanel(fileListPanel);
+        fileListPanel = new FileListPanel();
+        fileListScrollPane = fileListPanel.getScrollPane();
+        frame.add(fileListScrollPane, BorderLayout.CENTER);
+
+        simpleModeActive = simpleModeAllowed && !alwaysShowLogs;
+        controlPanel = new ControlPanel(fileListPanel, simpleModeActive, CrashAssistantGUI::handleShowLogsButtonClick);
         frame.add(controlPanel.getPanel(), BorderLayout.SOUTH);
+        updateSimpleModeVisibility();
 
         for (Log log : LogsList.getLogs()) {
             fileListPanel.addLog(log);
@@ -410,6 +434,7 @@ public class CrashAssistantGUI {
         showCrashAssistantDuplicatedWarning();
         showIncompatibleModsWarning();
         IncompatibleModsWarning.showWarnings(CrashAssistantGUI.frame);
+        showTooManyChangesWarning();
         IntelChipBugWarning.showIfAffected(false);
         showEarlyIntegratedGPUWarning();
         new Thread(() -> {
@@ -462,7 +487,7 @@ public class CrashAssistantGUI {
         JMenuItem openModsFolderItem = new JMenuItem(LanguageProvider.get("gui.menu.file.open_mods_folder"));
         openModsFolderItem.addActionListener(e -> {
             try {
-                File modsFolder = new File("mods");
+                File modsFolder = ModListUtils.MODS_FOLDER.toFile();
                 Desktop.getDesktop().open(modsFolder);
             } catch (IOException ex) {
                 CrashAssistantApp.LOGGER.error("Error opening mods folder", ex);
@@ -525,6 +550,12 @@ public class CrashAssistantGUI {
                 analysisMenu.add(epicFightAnalysisItem);
             }
 
+            if (!disabledByConfigTools.contains("AzureLibDependenciesAnalysisGUI")) {
+                JMenuItem epicFightAnalysisItem = makeMenuItem.apply("gui.menu.analysis.azure_lib_addons_compatibility", "gui.menu.analysis.azure_lib_addons_compatibility.desc");
+                epicFightAnalysisItem.addActionListener(e -> AzureLibDependenciesAnalysisGUI.showAzureLibAnalysisDialog(frame));
+                analysisMenu.add(epicFightAnalysisItem);
+            }
+
             if (!disabledByConfigTools.contains("MCreatorModDetectorGUI")) {
                 JMenuItem mcreatorDetectorItem = makeMenuItem.apply("gui.menu.analysis.mcreator_mod_detector", "gui.analysis.mcreator_detector.header");
                 mcreatorDetectorItem.addActionListener(e -> MCreatorModDetectorGUI.showMCreatorModDetectorDialog(frame));
@@ -582,6 +613,76 @@ public class CrashAssistantGUI {
         frame.setJMenuBar(menuBar);
     }
 
+    private static boolean isAlwaysShowLogsEnabled() {
+        return Objects.equals(CrashAssistantLocalConfig.get("gui.simple_mode.always_show_logs"), true);
+    }
+
+    private static boolean isSkipPromptEnabled() {
+        return Objects.equals(CrashAssistantLocalConfig.get("gui.simple_mode.skip_prompt"), true);
+    }
+
+    private static void updateSimpleModeVisibility() {
+        if (fileListScrollPane == null) return;
+        fileListScrollPane.setVisible(!simpleModeActive);
+        if (controlPanel != null) {
+            controlPanel.setSimpleModeButtonVisible(simpleModeActive);
+            boolean showModList = controlPanel.wasModListInitiallyVisible() && (!simpleModeActive || !hideModListInSimpleMode);
+            controlPanel.setModListSectionVisible(showModList);
+        }
+        resize();
+    }
+
+    private static void showLogsAndDisableSimpleMode() {
+        simpleModeActive = false;
+        updateSimpleModeVisibility();
+    }
+
+    private static void handleShowLogsButtonClick() {
+        if (!simpleModeActive) {
+            return;
+        }
+
+        showLogsAndDisableSimpleMode();
+
+        if (isSkipPromptEnabled()) {
+            return;
+        }
+
+        JCheckBox dontAskAgain = new JCheckBox(LanguageProvider.get("gui.simple_mode.prompt_dont_ask"));
+        JPanel messagePanel = new JPanel(new BorderLayout(0, 8));
+        JLabel messageLabel = new JLabel("<html>" + LanguageProvider.get("gui.simple_mode.prompt_question") + "</html>");
+        messagePanel.add(messageLabel, BorderLayout.CENTER);
+        messagePanel.add(dontAskAgain, BorderLayout.SOUTH);
+
+        Object[] options = new Object[]{
+                LanguageProvider.get("gui.simple_mode.prompt_yes"),
+                LanguageProvider.get("gui.simple_mode.prompt_no")
+        };
+        int choice = JOptionPane.showOptionDialog(
+                frame,
+                messagePanel,
+                LanguageProvider.get("gui.simple_mode.prompt_title"),
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                options,
+                options[0]
+        );
+
+        boolean treatedAsNo = choice == JOptionPane.NO_OPTION || choice == JOptionPane.CLOSED_OPTION;
+        boolean treatAsYes = choice == JOptionPane.YES_OPTION;
+
+        if (treatAsYes) {
+            CrashAssistantLocalConfig.set("gui.simple_mode.skip_prompt", true);
+            CrashAssistantLocalConfig.set("gui.simple_mode.always_show_logs", true);
+        } else if (dontAskAgain.isSelected()) {
+            CrashAssistantLocalConfig.set("gui.simple_mode.skip_prompt", true);
+        }
+
+        showLogsAndDisableSimpleMode();
+    }
+
+
     private static void showLogsPrivacyInfo() {
         String privacyInfo = Lang.applyPlaceHolders("<h2>$LANG.gui.privacy.crash_assistant_privacy_policy.version_text$ $LANG.gui.privacy.crash_assistant_privacy_policy.version$</h2>$LANG.gui.privacy.crash_assistant_privacy_policy.crash_assistant$ $LANG.gui.privacy.crash_assistant_privacy_policy.mclogs$ $LANG.gui.privacy.crash_assistant_privacy_policy.gnomebot$ $LANG.gui.privacy.crash_assistant_privacy_policy.validity$ $LANG.gui.privacy.crash_assistant_privacy_policy.reset$ $LANG.gui.privacy.crash_assistant_privacy_policy.volume$",
                 new HashMap<String, String>() {{
@@ -617,8 +718,13 @@ public class CrashAssistantGUI {
     }
 
     public static void resize() {
-        frame.setSize(frame.getPreferredSize().width + 17, Math.min(frame.getPreferredSize().height, 700));
+        if (frame == null || fileListPanel == null) return;
+        int old = fileListPanel.getScrollPane().getVerticalScrollBarPolicy();
+        fileListPanel.getScrollPane().setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        frame.pack();
+        frame.setSize(frame.getPreferredSize().width, Math.min(frame.getPreferredSize().height, 700));
         frame.setMinimumSize(new Dimension(frame.getSize().width, frame.getSize().height));
+        fileListPanel.getScrollPane().setVerticalScrollBarPolicy(old);
         frame.repaint();
     }
 
@@ -644,7 +750,7 @@ public class CrashAssistantGUI {
                         KnownCrashReason.shownKnownCrashReasons.add(crashReason);
                         CrashAssistantApp.LOGGER.info("Showing KnownCrashReason: {}\n{}",
                                 crashReason.getClass().getSimpleName(),
-                                crashReasonMessage.isCodexMessage() ? crashReasonMessage.getMessage() : crashReasonMessage.getMessage().split("\n")[0] + "...");
+                                "\n \n" + HtmlToMarkdown.convert(crashReasonMessage.getMessage()) + "\n \n");
                         crashReasonMessage.setShownWarn(true);
 
                         JEditorPane messagePane = CrashAssistantGUI.getEditorPane(crashReasonMessage.getMessage(), crashReasonMessage.isCodexMessage());
@@ -748,6 +854,73 @@ public class CrashAssistantGUI {
         }
     }
 
+    public static void showTooManyChangesWarning() {
+        synchronized (KnownCrashReasonMessage.class) {
+            try {
+                try {
+                    if (Objects.equals(dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantLocalConfig.get("too_many_changes.dont_show_again"), true)) {
+                        return;
+                    }
+                } catch (Throwable ignored) {
+                }
+
+                int allowedChanges = CrashAssistantConfig.getInteger("too_many_changes_warning.count");
+                if (allowedChanges <= 0) return;
+                if (ModListDiff.isModpackCreator()) return;
+                int totalChanges = ModListDiff.getDiff(true).getTotalChanges();
+                if (totalChanges <= allowedChanges) return;
+                String message;
+                if (CrashAssistantConfig.get("too_many_changes_warning.formulation_type").equals("DROP_SUPPORT")) {
+                    message = LanguageProvider.get("gui.too_many_changes_warning_drop_support");
+                } else {
+                    message = LanguageProvider.get("gui.too_many_changes_warning_notice");
+                }
+                message = message.replace("$MODIFICATIONS_COUNT$", "<strong style='color: red;'>" + totalChanges + "</strong>");
+
+                ControlPanel.stopMovingToTop = true;
+                String finalMessage = message;
+                SwingUtilities.invokeAndWait(() -> {
+                    JDialog dialog = new JDialog((Frame) null, LanguageProvider.get("gui.too_many_changes_title"), true);
+                    dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+
+                    JEditorPane textPane = CrashAssistantGUI.getEditorPane(finalMessage, false);
+                    JPanel textPanel = new JPanel(new BorderLayout());
+                    textPanel.setBorder(BorderFactory.createCompoundBorder(
+                            BorderFactory.createLineBorder(Color.LIGHT_GRAY, 1),
+                            BorderFactory.createEmptyBorder(10, 10, 10, 10)
+                    ));
+                    textPanel.add(textPane, BorderLayout.CENTER);
+
+                    JCheckBox dontShowAgainCheck = new JCheckBox(LanguageProvider.get("gui.intel_corrupted_dont_show_again"));
+                    dontShowAgainCheck.addActionListener(e ->
+                            dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantLocalConfig.set("too_many_changes.dont_show_again", dontShowAgainCheck.isSelected())
+                    );
+
+                    JButton okButton = new JButton("OK");
+                    okButton.addActionListener(e -> dialog.dispose());
+
+                    JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 5));
+                    bottomPanel.add(dontShowAgainCheck);
+                    bottomPanel.add(okButton);
+
+                    JPanel mainPanel = new JPanel(new BorderLayout(10, 5));
+                    mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+                    mainPanel.add(textPanel, BorderLayout.CENTER);
+                    mainPanel.add(bottomPanel, BorderLayout.SOUTH);
+
+                    dialog.setContentPane(mainPanel);
+                    dialog.pack();
+                    dialog.setLocationRelativeTo(null);
+                    CrashAssistantApp.LOGGER.info("Showing too many changes warning");
+                    dialog.setVisible(true);
+                    CrashAssistantApp.LOGGER.info("Too many changes warning dialog closed");
+                });
+            } catch (Exception e) {
+                CrashAssistantApp.LOGGER.error("Error while showing too many changes warning: ", e);
+            }
+        }
+    }
+
     public static void showEarlyIntegratedGPUWarning() {
         synchronized (KnownCrashReasonMessage.class) {
             try {
@@ -831,7 +1004,7 @@ public class CrashAssistantGUI {
                             boolean allDeleted = true;
                             for (Mod mod : detectedMods) {
                                 String jarName = mod.getJarName();
-                                File modsDir = new File("mods");
+                                File modsDir = ModListUtils.MODS_FOLDER.toFile();
                                 File modFile = new File(modsDir, jarName);
 
                                 if (modFile.exists()) {
@@ -907,7 +1080,7 @@ public class CrashAssistantGUI {
                         try {
                             dialog.setAlwaysOnTop(false);
                             String jarName = Boot.crashAssistantModJarName;
-                            File modsDir = new File("mods");
+                            File modsDir = ModListUtils.MODS_FOLDER.toFile();
                             File modFile = new File(modsDir, jarName);
 
                             if (!modFile.exists()) {
@@ -1103,7 +1276,7 @@ public class CrashAssistantGUI {
 
     public static void addMissingLogs() {
         for (Log log : LogsList.getLogs()) {
-            if (fileListPanel.filePanelList.stream().noneMatch(x -> Objects.equals(x.getLog(), log))) {
+            if (fileListPanel.getFilePanelList().stream().noneMatch(x -> Objects.equals(x.getLog(), log))) {
                 fileListPanel.addLog(log);
             }
         }

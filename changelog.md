@@ -1,3 +1,137 @@
+1.10.27:
+
+- Added GZIP compression for McLogs API uploads to reduce payload size and upload times by up to 100x.
+- Small fixes.
+
+1.10.26:
+
+- Marked 1.21.11 as compatible.
+- Added Malay translation. Thanks `NuruddinPlays` for making PR!
+- Small fixes.
+
+1.10.25:
+
+- Fixed OutOfMemory errors in crash assistant process introduced in previous update due to
+  hashing computing read entire mods files into memory.
+    - Now it uses a memory-efficient streaming approach to calculate hashes, ensuring constant memory usage
+      regardless of file size.
+
+1.10.24:
+
+- Redesigned "Mod List Difference" feature. Transformed from a simple text list into a fully interactive tool.
+    - **Interactive Tables**: Now displays changes in organized sections (Added, Updated, Removed).
+    - **Platform Integration**: Added CurseForge and Modrinth support.
+        - Identifies local files using hashing.
+        - Displays clickable icons linking directly to mod project pages.
+    - **New Actions**:
+        - **Revert Update**: Automatically downloads and restores the specific version defined in the modpack / latest
+          successful launch.
+        - **Restore**: Downloads and restores missing mods.
+        - **Manage**: Buttons to Disable, Enable, Remove, or Show mods in Explorer.
+    - **Smart Downloads**:
+        - Supports automatic downloading via API.
+        - **Manual Download Fallback**: If a mod prevents third-party downloads, a new dialog appears supporting
+          **Drag & Drop** (download in browser -> drop in tool -> auto-install).
+    - Asynchronous operations for hashing and network requests to prevent GUI freezing.
+    - Added localization for the new interface (en, de, es, it, pt, ru, zh).
+- Prevented workaround with spaces and calculating the width of the upload button automatically.
+- Fixed the mods folder location on lunar client.
+
+1.10.23:
+
+- Added option to skip split dialog (for large logs split into two parts) and automatically copy both links.
+- Added "Simple Mode" feature that hides logs behind a button (disabled by default).
+- Small fixes related to the new `stderr_stream.log` and legacy versions.
+
+1.10.22:
+
+- Now Crash Assistant log has full analysis message displayed to the user formatted with Markdown. So now people in
+  support channels can just copy it from the crash assistant log and paste it into Discord in cases where users ignored
+  analysis messages. Previously, it was truncated with just the first line.
+- Fixed logs were not added to the list of logs on Lunar Client
+  because they were located in different folders.
+- Fixed the text of the upload button in Brazillian Portuguese may be truncated.
+- Fixed, I forgot to add Brazillian Portuguese to localization list,
+  so localization added in the previous update didn't work.
+- Fixed `MedievalOriginsVsForgeOrigins` analysis not triggered some times.
+- Added some logging related to the new `stderr_stream.log`.
+- Fixed AnimatedBorder worked a little incorrectly with Windows display scaling(not 100%).
+- Marked versions 1.7.10 - 1.15.2 as release instead of beta,
+  as I have not seen issues for a long time on these versions.
+
+1.10.21:
+
+- Added Brazillian Portuguese localization. Thanks `paodelonga` for making PR.
+- Enhanced `LauncherLogger` to include millisecond precision in timestamps.
+- Now `stderr_stream.log` is displayed to the user only if it includes stack traces. Previously, it may include just a
+  couple of useless warning messages that make no sense.
+- Added new log analysis `JnaPermissionIssue`. Detects if JNA was not allowed to create temporary folder.
+- Added new log analysis `AzureLibAddons`. Detects if mods which depend on AzureLib need a different version of it.
+    - Suggests analysis to find incompatible mods or find all mods which require AzureLib.
+- Added new analysis GUI tool which will find mods that depend on AzureLib but require different versions of it.
+- Added new log analysis `MedievalOriginsVsForgeOrigins`. Notifies that Medieval Origins requires Fabric version of
+  Origins since some version instead of Forge version.
+- Added new log analysis `McdaMcdwVsClumps`. Notifies that MC Dungeons mods require Fabric version of Clumps on Forge.
+- Fixed detection of failure to create JNA temporary folder. Was working incorrectly when the error message was
+  localized to different languages.
+- Fixed JNA platform library path being located incorrectly on some MC versions (1.19.2, 1.18.2), which caused error
+  spam while locating terminated processes (win_event log). Also some other features worked incorrectly on these
+  versions.
+- Fixed `CorruptedModJar` analysis sometimes can be actually `CurseForgeCorrupted` issue.
+
+1.10.20:
+
+- Now Crash Assistant generates `stderr_stream.log` with stderr output of the Minecraft process. Some launchers are not
+  saving this info, while often only it contains the reason of the crash.
+- Added config option to disable `stderr_stream.log` generation.
+
+1.10.19:
+
+- Added support of a new format of MissingUnsupportedDependencies.
+- Fixed `ModuleFind` and `ModuleResolution` log analysis rarely cannot find the issue.
+- Fixed race condition during logs uploading.
+
+1.10.18:
+
+- New `CorruptedModJar` log analysis. Detects if a crash is caused by a corrupted mod archive.
+- Fixed `ServerConfigCorrupted` log analysis was not triggered sometimes.
+- Fixed `Create6Addons` log analysis was not triggered rarely.
+
+1.10.17:
+
+- Fixed a typo in the "Too Many Changes" warning text.
+
+1.10.16:
+
+- Now the modpack logo is displayed at the center, not on top. Added an option to return it to the top.
+    - If the modpack logo was square, anyway it consumed all available height, and this didn't matter.
+      This is applicable only for non-square logos.
+- Now config is restoring its canonical order for newly added keys.
+- Added a "Too Many Changes" warning for modpacks, disabled by default.
+  Allows configuring how many changes modpack creator allows
+  and displaying warning if the end user modified modpack, too heavily.
+- Fixed non-square but rectangle modpack logos were not sized correctly.
+- Fixed resize() function is working a little bit incorrectly when the modpack logo is configured.
+- Fixed the error in the log on Linux systems in an Intel corrupted processor checker.
+
+1.10.15:
+
+- Switch from PowerShell to native JNA-based Windows Event Log querying in `TerminatedProcessesFinder`. This was done
+  because PowerShell can start slowly on some rare systems.
+- Fixed invalid gui size hiding some logs initially (before resizing after a couple of seconds) if
+  `modpack_modlist.enabled` config option was disabled.
+
+1.10.14:
+
+- Added GIF support for modpack logos.
+- Added customization options for copied text of individual upload buttons.
+    - By default, a copied link now includes the log filename.
+- Fixed Intel microcode warning didn't display a microcode version correctly due to
+  differences in byte order on some systems.
+- Fixed the race condition during logs uploading added two versions ago.
+- Fixed `ConnectorIncompatibleFabricMods` log analysis added a couple of versions ago didn't work.
+- Many fixes and improvements.
+
 1.10.13:
 
 - Reword translatable strings. Thanks Miroma (`its-miroma`) for making PR.

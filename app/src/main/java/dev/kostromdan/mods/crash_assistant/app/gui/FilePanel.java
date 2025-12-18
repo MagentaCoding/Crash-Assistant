@@ -42,6 +42,7 @@ public class FilePanel {
     private boolean waiting = true;
     private static final Set<FilePanel> awaitingPrivacyPolicyDialogs = Collections.synchronizedSet(new HashSet<>());
     private final Log log;
+    private final int fullButtonWidth;
 
     public FilePanel(Log log) {
         this.log = log;
@@ -61,14 +62,19 @@ public class FilePanel {
         openButton = createButton(LanguageProvider.get("gui.open_button"), e -> openFile());
         showButton = createButton(LanguageProvider.get("gui.show_in_explorer_button"), e -> showInExplorer());
 
+        browserButton = createButtonWithIcon("assets/internet.png", e -> openInBrowser());
+        browserButton.setVisible(false);
+        browserButton.setToolTipText(LanguageProvider.get("gui.browser_button_tooltip"));
+
         uploadButton = createButton(LanguageProvider.get("gui.upload_and_copy_link_button"), e -> uploadFile());
         synchronized (ControlPanel.class) {
             uploadButton.setEnabled(ControlPanel.uploadButtonsActivated);
         }
 
-        browserButton = createButtonWithIcon("assets/internet.png", e -> openInBrowser());
-        browserButton.setVisible(false);
-        browserButton.setToolTipText(LanguageProvider.get("gui.browser_button_tooltip"));
+        fullButtonWidth = calculateMaxButtonWidth();
+        Dimension dim = new Dimension(fullButtonWidth, uploadButton.getPreferredSize().height);
+        uploadButton.setPreferredSize(dim);
+        uploadButton.setMinimumSize(dim);
 
 
         buttonPanel.add(spacerPanel);
@@ -81,6 +87,49 @@ public class FilePanel {
 
         panel.setMinimumSize(new Dimension(0, panel.getPreferredSize().height));
         panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, panel.getPreferredSize().height));
+    }
+
+    private int calculateMaxButtonWidth() {
+        List<String> singleStateTexts = Arrays.asList(
+                LanguageProvider.get("gui.upload_and_copy_link_button"),
+                LanguageProvider.get("gui.uploading"),
+                LanguageProvider.get("gui.delayed"),
+                LanguageProvider.get("gui.preprocessing"),
+                LanguageProvider.get("gui.error")
+        );
+
+        List<String> copyStateTexts = Arrays.asList(
+                LanguageProvider.get("gui.copied"),
+                LanguageProvider.get("gui.copy_link_button")
+        );
+
+        int max = 0;
+        JButton dummy = new JButton();
+        dummy.setBorder(uploadButton.getBorder());
+        dummy.setMargin(uploadButton.getMargin());
+        dummy.setFont(uploadButton.getFont());
+        
+        // Measure texts that appear alone (without browser button)
+        for (String s : singleStateTexts) {
+            if (s != null) {
+                dummy.setText(s);
+                max = Math.max(max, dummy.getPreferredSize().width);
+            }
+        }
+
+        // Measure texts that appear with the browser button
+        // Total width = Button Width + Gap (5) + Browser Button Width
+        int browserButtonWidth = browserButton.getPreferredSize().width;
+        for (String s : copyStateTexts) {
+            if (s != null) {
+                dummy.setText(s);
+                int totalRequired = dummy.getPreferredSize().width + 5 + browserButtonWidth;
+                max = Math.max(max, totalRequired);
+            }
+        }
+
+        // Add small safety padding
+        return max + 4;
     }
 
     public JButton createButton(String text, ActionListener actionListener) {
@@ -223,7 +272,7 @@ public class FilePanel {
                     String oldText = uploadButton.getText();
 
                     if (!fromButton && log.getType() == LogType.CRASH_ASSISTANT) {
-                        List<FilePanel> logsCodexSupports = CrashAssistantGUI.fileListPanel.filePanelList.stream()
+                        List<FilePanel> logsCodexSupports = CrashAssistantGUI.fileListPanel.getFilePanelList().stream()
                                 .filter(x -> LogAnalyser.CodexSupportedLogTypes.contains(x.getLog().getType()))
                                 .collect(Collectors.toList());
                         while (!logsCodexSupports.isEmpty()) {
@@ -305,15 +354,20 @@ public class FilePanel {
             String toCopy = null;
             if (fromButton) {
                 if (log.getLinkToUploadedLastLines() != null) {
-                    AtomicReference<String> result = new AtomicReference<>();
-                    try {
-                        SwingUtilities.invokeAndWait(() -> {
-                            result.set(showLogPartSelectionDialog(LanguageProvider.get("gui.split_log_dialog_action_copy")));
-                        });
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
+                    boolean skipSplitDialog = CrashAssistantConfig.getBoolean("copied_links.skip_split_dialog");
+                    if (skipSplitDialog) {
+                        toCopy = getSplitLogCopyMessageWithBothLinks();
+                    } else {
+                        AtomicReference<String> result = new AtomicReference<>();
+                        try {
+                            SwingUtilities.invokeAndWait(() -> {
+                                result.set(showLogPartSelectionDialog(LanguageProvider.get("gui.split_log_dialog_action_copy")));
+                            });
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                        toCopy = result.get();
                     }
-                    toCopy = result.get();
                 } else if (log.getLinkToUploadedFirstLines() != null) {
                     toCopy = CrashAssistantConfig.get("copied_links.single_link", true);
                     toCopy = toCopy.replace("$LINK$", log.getLinkToUploadedFirstLines());
@@ -350,8 +404,8 @@ public class FilePanel {
     private void transformCopyLinkButton() {
         String oldText = uploadButton.getText();
         browserButton.setVisible(true);
-        uploadButton.setText(LanguageProvider.get("gui.upload_and_copy_link_button"));
-        uploadButton.setPreferredSize(new Dimension(uploadButton.getMinimumSize().width - browserButton.getMinimumSize().width - 5, uploadButton.getMinimumSize().height));
+        int newWidth = fullButtonWidth - browserButton.getPreferredSize().width - 5;
+        uploadButton.setPreferredSize(new Dimension(newWidth, uploadButton.getPreferredSize().height));
         uploadButton.setText(oldText);
     }
 
@@ -419,10 +473,7 @@ public class FilePanel {
         if (selectedValue == null) {
 
         } else if (selectedValue.equals(options[0])) {
-            String toCopy = CrashAssistantConfig.get("copied_links.both_links_split", true);
-            toCopy = toCopy.replace("$LINK_FIRST_LINES$", this.log.getLinkToUploadedFirstLines());
-            toCopy = toCopy.replace("$LINK_LAST_LINES$", this.log.getLinkToUploadedLastLines());
-            selectedValue = toCopy;
+            selectedValue = getSplitLogCopyMessageWithBothLinks();
         } else if (selectedValue.equals(options[1])) {
             if (!forCopy) {
                 selectedValue = log.getLinkToUploadedFirstLines();
@@ -444,6 +495,13 @@ public class FilePanel {
         }
         FileListPanel.currentLogSelectionDialog = null;
         return (String) selectedValue;
+    }
+
+    private String getSplitLogCopyMessageWithBothLinks() {
+        String toCopy = CrashAssistantConfig.get("copied_links.both_links_split", true);
+        toCopy = toCopy.replace("$LINK_FIRST_LINES$", this.log.getLinkToUploadedFirstLines());
+        toCopy = toCopy.replace("$LINK_LAST_LINES$", this.log.getLinkToUploadedLastLines());
+        return toCopy;
     }
 
     public boolean isWaiting() {

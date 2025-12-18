@@ -9,6 +9,7 @@ import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantCo
 import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantLocalConfig;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LanguageProvider;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LinksProvider;
+import dev.kostromdan.mods.crash_assistant.common_config.platform.PlatformHelp;
 
 import javax.swing.*;
 import java.awt.*;
@@ -138,6 +139,7 @@ public class IntelChipBugWarning {
 
     public static void parseMicrocodeVersion() {
         try {
+            if (!PlatformHelp.isWindows()) return;
             byte[] cur = Advapi32Util.registryGetBinaryValue(
                     WinReg.HKEY_LOCAL_MACHINE,
                     "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
@@ -156,24 +158,6 @@ public class IntelChipBugWarning {
 
             long rev = (d0 != 0) ? d0 : d1;
 
-
-            // Fallback: try BIOS-provided "Previous Update Revision"
-            if (rev == 0) {
-                byte[] prev = Advapi32Util.registryGetBinaryValue(
-                        WinReg.HKEY_LOCAL_MACHINE,
-                        "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                        "Previous Update Revision"
-                );
-                if (prev != null && prev.length >= 4) {
-                    CrashAssistantApp.LOGGER.info("Previous Update Revision bytes: {}", IntStream.range(0, prev.length).mapToObj(i -> String.format("%02X", prev[i] & 0xFF)).collect(Collectors.joining(" ")));
-
-                    ByteBuffer pb = ByteBuffer.wrap(prev).order(ByteOrder.LITTLE_ENDIAN);
-                    long p0 = (pb.getInt(0) & 0xFFFFFFFFL);
-                    long p1 = (prev.length >= 8) ? (pb.getInt(4) & 0xFFFFFFFFL) : 0L;
-                    rev = (p0 != 0) ? p0 : p1;
-                }
-            }
-
             if (rev == 0) {
                 // Treat as unknown instead of misleading "0x0"
                 microcodeVersion = -1L;
@@ -186,7 +170,7 @@ public class IntelChipBugWarning {
             microcodeVertionString = String.format("0x%X", microcodeVersion);
             CrashAssistantApp.LOGGER.info("Microcode version: " + microcodeVertionString);
 
-        } catch (Exception e) {
+        } catch (Throwable e) {
             microcodeVersion = -1L;
             microcodeVertionString = "ERROR - FAILED TO GET MICROCODE";
             CrashAssistantApp.LOGGER.error("Error getting microcode version: ", e);

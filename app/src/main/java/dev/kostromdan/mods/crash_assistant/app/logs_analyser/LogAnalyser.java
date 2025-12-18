@@ -157,6 +157,8 @@ public class LogAnalyser {
         registerKnownCrashReason(new nglMultiDrawElementsBaseVertex());
         registerKnownCrashReason(new Nvoglv64());
 
+        registerKnownCrashReason(new AzureLibAddons());
+        registerKnownCrashReason(new CorruptedModJar());
         registerKnownCrashReason(new Create6Addons());
         registerKnownCrashReason(new CtovWithoutLithostitched());
         registerKnownCrashReason(new CurseForgeCorrupted());
@@ -167,9 +169,12 @@ public class LogAnalyser {
         registerKnownCrashReason(new FerriteCoreNeighborTable());
         registerKnownCrashReason(new GeckoLibOculusCompat());
         registerKnownCrashReason(new GroovyModLoaderIPv6());
+        registerKnownCrashReason(new JnaPermissionIssue());
         registerKnownCrashReason(new KubeJSDataPack());
         registerKnownCrashReason(new LanguageProviderMismatch());
         registerKnownCrashReason(new LegacyTooManyIds());
+        registerKnownCrashReason(new McdaMcdwVsClumps());
+        registerKnownCrashReason(new MedievalOriginsVsForgeOrigins());
         registerKnownCrashReason(new MissingEmbeddiumForOculus());
         registerKnownCrashReason(new MissingIndium());
         registerKnownCrashReason(new MissingUnsupportedDependencies());
