@@ -5,6 +5,8 @@ import com.sun.jna.platform.win32.WinReg;
 import dev.kostromdan.mods.crash_assistant.app.CrashAssistantApp;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.KnownCrashReasonMessage;
 import dev.kostromdan.mods.crash_assistant.app.utils.IntelCorruptedProcessorChecker;
+import dev.kostromdan.mods.crash_assistant.app.utils.LinksHelper;
+import dev.kostromdan.mods.crash_assistant.app.utils.ThemeUtils;
 import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantConfig;
 import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantLocalConfig;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LanguageProvider;
@@ -29,6 +31,7 @@ public class IntelChipBugWarning {
 
     public static void showIfAffected(boolean debug) {
         synchronized (KnownCrashReasonMessage.class) {
+            ThemeUtils.ensureThemesApplied();
             if (!CrashAssistantConfig.getBoolean("intel_corrupted.enabled")) return;
             if (!IntelCorruptedProcessorChecker.isAffectedProcessor() && !debug) return;
 
@@ -100,7 +103,7 @@ public class IntelChipBugWarning {
             JButton readMoreButton = new JButton(LanguageProvider.get("gui.intel_corrupted_read_more"));
             readMoreButton.addActionListener(e -> {
                 try {
-                    Desktop.getDesktop().browse(new URI(LinksProvider.INTEL_CHIP_BUG_FAQ.getLink()));
+                    LinksHelper.browse(new URI(LinksProvider.INTEL_CHIP_BUG_FAQ.getLink()));
                 } catch (Exception ex) {
                     CrashAssistantApp.LOGGER.error("Error opening URL: ", ex);
                 }

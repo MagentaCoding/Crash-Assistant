@@ -3,6 +3,7 @@ package dev.kostromdan.mods.crash_assistant.app.logs_analyser;
 public enum LogType {
     LOG,
     DEBUG_LOG,
+    STDERR_STREAM,
     LAUNCHER_LOG,
     CRASH_REPORT,
     HS_ERR,
@@ -12,6 +13,8 @@ public enum LogType {
     MOD_LIST,
     KUBE_JS,
     CRAFT_TWEAKER,
+    GROOVY,
     REI,
-    CRASH_ASSISTANT
+    CRASH_ASSISTANT,
+    STARTUP_SCRIPTS
 }

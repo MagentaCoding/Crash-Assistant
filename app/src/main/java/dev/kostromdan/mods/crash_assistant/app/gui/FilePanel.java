@@ -9,6 +9,7 @@ import dev.kostromdan.mods.crash_assistant.app.logs_analyser.LogAnalyser;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.LogType;
 import dev.kostromdan.mods.crash_assistant.app.utils.ClipboardUtils;
 import dev.kostromdan.mods.crash_assistant.app.utils.DragAndDrop;
+import dev.kostromdan.mods.crash_assistant.app.utils.LinksHelper;
 import dev.kostromdan.mods.crash_assistant.app.utils.uploading_apis.ApiProvider;
 import dev.kostromdan.mods.crash_assistant.app.utils.uploading_apis.Problem;
 import dev.kostromdan.mods.crash_assistant.app.utils.uploading_apis.UploadLogResponse;
@@ -27,7 +28,6 @@ import java.util.*;
 import java.util.List;
 import java.util.Timer;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -40,7 +40,7 @@ public class FilePanel {
     private final JButton browserButton;
     private Exception lastError = null;
     private boolean waiting = true;
-    private static final Set<FilePanel> awaitingPrivacyPolicyDialogs = Collections.synchronizedSet(new HashSet<>());
+    public static final Object uploadErrorDialogLock = new Object();
     private final Log log;
     private final int fullButtonWidth;
 
@@ -73,6 +73,12 @@ public class FilePanel {
 
         fullButtonWidth = calculateMaxButtonWidth();
         Dimension dim = new Dimension(fullButtonWidth, uploadButton.getPreferredSize().height);
+        
+        // Ensure browser button has same height as upload button to prevent resizing
+        Dimension browserDim = new Dimension(browserButton.getPreferredSize().width, dim.height);
+        browserButton.setPreferredSize(browserDim);
+        browserButton.setMinimumSize(browserDim);
+        
         uploadButton.setPreferredSize(dim);
         uploadButton.setMinimumSize(dim);
 
@@ -108,7 +114,7 @@ public class FilePanel {
         dummy.setBorder(uploadButton.getBorder());
         dummy.setMargin(uploadButton.getMargin());
         dummy.setFont(uploadButton.getFont());
-        
+
         // Measure texts that appear alone (without browser button)
         for (String s : singleStateTexts) {
             if (s != null) {
@@ -212,7 +218,7 @@ public class FilePanel {
             return;
         }
         try {
-            Desktop.getDesktop().browse(new URL(linkToCopy).toURI());
+            LinksHelper.browse(new URL(linkToCopy).toURI());
         } catch (Exception e) {
             CrashAssistantApp.LOGGER.error("Failed to open in link browser: ", e);
         }
@@ -245,42 +251,34 @@ public class FilePanel {
             return;
         }
         uploadButton.setEnabled(false);
+
+        lastError = null;
         new Thread(() -> {
+            if(!fromButton && log.getType() == LogType.CRASH_ASSISTANT && log.getLinkToUploadedFirstLines() != null){
+                untransformCopyLinkButton();
+                log.setLinkToUploadedFirstLines(null);
+                log.setLinkToUploadedLastLines(null);
+            }
             if (log.getLinkToUploadedFirstLines() == null) {
-                lastError = null;
-                uploadButton.setPreferredSize(new Dimension(uploadButton.getMinimumSize().width, 25));
                 uploadButton.setText(LanguageProvider.get("gui.uploading"));
 
                 try {
-                    awaitingPrivacyPolicyDialogs.add(this);
-                    synchronized (FileListPanel.class) {
-                        if (!awaitingPrivacyPolicyDialogs.contains(this)) {
-                            throw new DeclinedException(LanguageProvider.get("gui.privacy.declined"));
-                        }
-                        AtomicBoolean accepted = new AtomicBoolean(true);
-                        SwingUtilities.invokeAndWait(() -> {
-                            if (!PrivacyPolicyDialog.showPrivacyPolicyDialog()) {
-                                awaitingPrivacyPolicyDialogs.clear();
-                                accepted.set(false);
-                            }
-                        });
-                        if (!accepted.get()) {
-                            throw new DeclinedException(LanguageProvider.get("gui.privacy.declined"));
-                        }
+                    if (!PrivacyPolicyDialog.ensurePrivacyPolicyAccepted()) {
+                        throw new DeclinedException(LanguageProvider.get("gui.privacy.declined"));
                     }
 
                     String oldText = uploadButton.getText();
 
                     if (!fromButton && log.getType() == LogType.CRASH_ASSISTANT) {
-                        List<FilePanel> logsCodexSupports = CrashAssistantGUI.fileListPanel.getFilePanelList().stream()
-                                .filter(x -> LogAnalyser.CodexSupportedLogTypes.contains(x.getLog().getType()))
+                        List<FilePanel> allLogsList = CrashAssistantGUI.fileListPanel.getFilePanelList().stream()
+                                .filter(x -> x.getLog().getType() != LogType.CRASH_ASSISTANT)
                                 .collect(Collectors.toList());
-                        while (!logsCodexSupports.isEmpty()) {
+                        while (!allLogsList.isEmpty()) {
                             uploadButton.setText(LanguageProvider.get("gui.delayed"));
                             Thread.sleep(100);
-                            if (logsCodexSupports.stream().anyMatch(x -> x.getLastError() != null))
-                                throw new UploadException("Crash Assistant log must be uploaded after logs, Codex supports. But encountered error while uploading one of them.");
-                            if (logsCodexSupports.stream().allMatch(x -> x.getLog().getLinkToUploadedFirstLines() != null))
+                            if (allLogsList.stream().anyMatch(x -> x.getLastError() != null))
+                                throw new UploadException("Crash Assistant log must be uploaded after all another logs. But encountered error while uploading one of them.");
+                            if (allLogsList.stream().allMatch(x -> x.getLog().getLinkToUploadedFirstLines() != null))
                                 break;
                         }
                     }
@@ -288,34 +286,35 @@ public class FilePanel {
                     uploadButton.setText(LanguageProvider.get("gui.preprocessing"));
                     log.getReader().readLogFile(true);
                     uploadButton.setText(oldText);
-                    CompletableFuture<UploadLogResponse> completableResponseFirstLines = ApiProvider.getMcLogsClient().uploadLog(log.getReader().getFirstLinesString());
+                    CompletableFuture<UploadLogResponse> completableResponseFirstLines = ApiProvider.getMcLogsClient().uploadLog(log.getName(), log.getReader().getFirstLinesString());
 
                     String lastLines = log.getReader().getLastLinesString();
                     if (lastLines != null) {
-                        CompletableFuture<UploadLogResponse> completableResponseLastLines = ApiProvider.getMcLogsClient().uploadLog(lastLines);
+                        CompletableFuture<UploadLogResponse> completableResponseLastLines = ApiProvider.getMcLogsClient().uploadLog(log.getName() + " (Last Lines)", lastLines);
                         UploadLogResponse responseLastLines = completableResponseLastLines.get();
-                        responseLastLines.setClient(ApiProvider.getMcLogsClient());
                         if (responseLastLines.isSuccess()) {
-                            log.setLinkToUploadedLastLines(CrashAssistantGUI.transformLink(responseLastLines.getUrl()));
+                            String finalLink = CrashAssistantGUI.transformLink(responseLastLines.getUrl());
+                            CrashAssistantApp.LOGGER.info("{} last lines uploaded successfully: {}", log.getName(), finalLink);
+                            log.setLinkToUploadedLastLines(finalLink);
                         } else {
                             throw new UploadException("An error occurred when uploading file: " + responseLastLines.getError());
                         }
                     }
                     UploadLogResponse responseFirstLines = completableResponseFirstLines.get();
-                    responseFirstLines.setClient(ApiProvider.getMcLogsClient());
 
 
                     if (responseFirstLines.isSuccess()) {
-                        String link = CrashAssistantGUI.transformLink(responseFirstLines.getUrl());
+                        String finalLink = CrashAssistantGUI.transformLink(responseFirstLines.getUrl());
+                        CrashAssistantApp.LOGGER.info("{} " + (lastLines != null ? "first lines " : "") + "uploaded successfully: {}", log.getName(), finalLink);
                         if (LogAnalyser.CodexSupportedLogTypes.contains(log.getType())) {
                             synchronized (KnownCrashReasonMessage.class) {
-                                for (Problem problem : responseFirstLines.getInsights().get().getProblems()) {
-                                    KnownCrashReasonMessage.addCodexMessage(log, problem, link);
+                                for (Problem problem : responseFirstLines.getInsights().getProblems()) {
+                                    KnownCrashReasonMessage.addCodexMessage(log, problem, finalLink);
                                 }
                                 CrashAssistantGUI.showKnownCrashReasonsWarnings();
                             }
                         }
-                        log.setLinkToUploadedFirstLines(link);
+                        log.setLinkToUploadedFirstLines(finalLink);
                     } else {
                         throw new UploadException("An error occurred when uploading file: " + responseFirstLines.getError());
                     }
@@ -324,18 +323,17 @@ public class FilePanel {
                         lastError = e;
                         CrashAssistantApp.LOGGER.info("Failed to upload file \"" + log.getPath() + "\": ", e);
                         uploadButton.setText(LanguageProvider.get("gui.error"));
-                        CrashAssistantGUI.highlightButton(uploadButton, new Color(255, 100, 100), 2800);
-                        if (fromButton) {
-                            String message = LanguageProvider.get("gui.failed_to_upload_file") + " \"" + log.getPath() + "\": " + e;
-                            if (e instanceof DeclinedException) {
-                                message = e.getMessage();
+                        CrashAssistantGUI.highlightButton(uploadButton, ControlPanel.deserializeColor(CrashAssistantConfig.get("gui_customisation.blinking_button_error_color"), new Color(255, 100, 100)), 2800);
+                        if (fromButton && !(e instanceof DeclinedException)) {
+                            synchronized (uploadErrorDialogLock) {
+                                String message = LanguageProvider.get("gui.failed_to_upload_file") + " \"" + log.getPath() + "\": " + e;
+                                JOptionPane.showMessageDialog(
+                                        panel,
+                                        message,
+                                        LanguageProvider.get("gui.failed_to_upload_file") + "!",
+                                        JOptionPane.ERROR_MESSAGE
+                                );
                             }
-                            JOptionPane.showMessageDialog(
-                                    panel,
-                                    message,
-                                    LanguageProvider.get("gui.failed_to_upload_file") + "!",
-                                    JOptionPane.ERROR_MESSAGE
-                            );
                         }
                         new Timer().schedule(
                                 new TimerTask() {
@@ -383,7 +381,7 @@ public class FilePanel {
 
                 if (toCopy != null) {
                     uploadButton.setText(LanguageProvider.get("gui.copied"));
-                    CrashAssistantGUI.highlightButton(uploadButton, new Color(100, 255, 100), 2800);
+                    CrashAssistantGUI.highlightButton(uploadButton, ControlPanel.deserializeColor(CrashAssistantConfig.get("gui_customisation.blinking_button_success_color"), new Color(100, 255, 100)), 2800);
                     uploadButton.setEnabled(false);
                 }
             }
@@ -407,6 +405,10 @@ public class FilePanel {
         int newWidth = fullButtonWidth - browserButton.getPreferredSize().width - 5;
         uploadButton.setPreferredSize(new Dimension(newWidth, uploadButton.getPreferredSize().height));
         uploadButton.setText(oldText);
+    }
+
+    private void untransformCopyLinkButton() {
+        browserButton.setVisible(false);
     }
 
     public String getTooBigReasons(boolean forMsg) {

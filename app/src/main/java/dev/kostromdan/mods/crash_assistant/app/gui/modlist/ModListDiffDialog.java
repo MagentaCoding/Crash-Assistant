@@ -4,6 +4,7 @@ import dev.kostromdan.mods.crash_assistant.app.CrashAssistantApp;
 import dev.kostromdan.mods.crash_assistant.app.gui.ControlPanel;
 import dev.kostromdan.mods.crash_assistant.app.gui.CrashAssistantGUI;
 import dev.kostromdan.mods.crash_assistant.app.utils.ClipboardUtils;
+import dev.kostromdan.mods.crash_assistant.app.utils.LinksHelper;
 import dev.kostromdan.mods.crash_assistant.app.utils.mods_downloader.ModPlatformLookupService;
 import dev.kostromdan.mods.crash_assistant.app.utils.mods_downloader.api.CurseForge;
 import dev.kostromdan.mods.crash_assistant.app.utils.mods_downloader.api.Modrinth;
@@ -13,6 +14,7 @@ import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListDiff;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModListUtils;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.UpdatedPair;
 import dev.kostromdan.mods.crash_assistant.common_config.mod_list.ModFingerprinter;
+import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantConfig;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -38,7 +40,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class ModListDiffDialog extends JFrame {
     private static ModListDiffDialog INSTANCE;
-    private final Window parentWindow;
+    private Window parentWindow;
     private static final ImageIcon CF_ICON = loadIcon("/assets/cf_logo.png");
     private static final ImageIcon MR_ICON = loadIcon("/assets/mr_logo.png");
     private final List<JButton> footerButtons = new ArrayList<JButton>();
@@ -47,6 +49,7 @@ public class ModListDiffDialog extends JFrame {
     private final JPanel progressButtonsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
     private final JButton cancelCurrentButton = new JButton(LanguageProvider.get("gui.modlist_diff.cancel_current"));
     private final JButton cancelAllButton = new JButton(LanguageProvider.get("gui.modlist_diff.cancel_all"));
+    public static final Path tmpDownloadsFolder = ModListUtils.MODS_FOLDER.resolve(".crash_assistant_tmp");
 
     // Cancellation State Flags
     private volatile boolean cancelCurrentRequested = false;
@@ -116,10 +119,13 @@ public class ModListDiffDialog extends JFrame {
             }
         }
 
+        Window blockParent = parent;
+        if (blockParent == null) blockParent = CrashAssistantGUI.getFrame();
+
         if (INSTANCE == null) {
-            Window blockParent = CrashAssistantGUI.getFrame();
-            if (blockParent == null) blockParent = parent;
             INSTANCE = new ModListDiffDialog(blockParent);
+        } else {
+            INSTANCE.parentWindow = blockParent;
         }
         INSTANCE.setLocationRelativeTo(parent);
         INSTANCE.setVisible(true);
@@ -128,15 +134,31 @@ public class ModListDiffDialog extends JFrame {
 
     @Override
     public void setVisible(boolean b) {
+        JFrame mainFrame = CrashAssistantGUI.getFrame();
         if (b) {
-            if (parentWindow != null) parentWindow.setVisible(false);
+            if (parentWindow != null && parentWindow != mainFrame) {
+                parentWindow.setVisible(false);
+            }
+            if (mainFrame != null) {
+                mainFrame.setEnabled(false);
+            }
+            super.setVisible(true);
         } else {
-            if (parentWindow != null) {
-                parentWindow.setVisible(true);
-                parentWindow.toFront();
+            super.setVisible(false);
+            if (mainFrame != null) {
+                mainFrame.setEnabled(true);
+            }
+            if (parentWindow != null && parentWindow != mainFrame) {
+                SwingUtilities.invokeLater(() -> {
+                    parentWindow.setVisible(true);
+                    parentWindow.toFront();
+                });
+            } else if (mainFrame != null) {
+                SwingUtilities.invokeLater(() -> {
+                    mainFrame.toFront();
+                });
             }
         }
-        super.setVisible(b);
     }
 
     enum SectionType {ADDED, UPDATED, REMOVED}
@@ -522,7 +544,7 @@ public class ModListDiffDialog extends JFrame {
         ClipboardUtils.copy(ModListDiff.getDiff(true).generateDiffMsg(true).toText());
         String originalText = LanguageProvider.get("gui.modlist_diff.copy_diff");
         button.setText(LanguageProvider.get("gui.copied"));
-        CrashAssistantGUI.highlightButton(button, new Color(100, 255, 100), 2600);
+        CrashAssistantGUI.highlightButton(button, ControlPanel.deserializeColor(CrashAssistantConfig.get("gui_customisation.blinking_button_success_color"), new Color(100, 255, 100)), 2600);
         button.setEnabled(false);
         new Timer("copy-diff-feedback", true).schedule(new TimerTask() {
             @Override
@@ -1146,18 +1168,17 @@ public class ModListDiffDialog extends JFrame {
             resetProgress();
             return false;
         }
-        Path stagingDir = ModListUtils.MODS_FOLDER.resolve(".crash_assistant_tmp");
         List<DownloadResult> downloads = new ArrayList<DownloadResult>();
         Set<Path> keepFinalPaths = new HashSet<Path>();
         try {
-            Files.createDirectories(stagingDir);
+            Files.createDirectories(tmpDownloadsFolder);
             for (DiffEntry.ModInstance saved : entry.savedMods) {
                 if (isCancelRequestedFor(entry)) {
                     consumeSingleCancel(); // RESET THE FLAG!
                     cleanupDownloads(downloads);
                     return false;
                 }
-                DownloadResult result = downloadSavedFile(entry, saved, stagingDir);
+                DownloadResult result = downloadSavedFile(entry, saved, tmpDownloadsFolder);
                 if (result == null) {
                     consumeSingleCancel(); // RESET THE FLAG!
                     cleanupDownloads(downloads);
@@ -1209,13 +1230,12 @@ public class ModListDiffDialog extends JFrame {
             resetProgress();
             return false;
         }
-        Path stagingDir = ModListUtils.MODS_FOLDER.resolve(".crash_assistant_tmp");
         List<DownloadResult> downloads = new ArrayList<DownloadResult>();
         Set<Path> keepFinalPaths = new HashSet<Path>();
         try {
-            Files.createDirectories(stagingDir);
+            Files.createDirectories(tmpDownloadsFolder);
             for (DiffEntry.ModInstance saved : entry.savedMods) {
-                DownloadResult result = downloadSavedFile(entry, saved, stagingDir);
+                DownloadResult result = downloadSavedFile(entry, saved, tmpDownloadsFolder);
                 if (result == null) {
                     consumeSingleCancel(); // RESET THE FLAG!
                     cleanupDownloads(downloads);
@@ -1723,7 +1743,7 @@ public class ModListDiffDialog extends JFrame {
                 url = "https://www.curseforge.com/minecraft/mc-mods/" + match.modId;
             }
             if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().browse(new URI(url));
+                LinksHelper.browse(new URI(url));
             }
         } catch (Exception e) {
             CrashAssistantApp.LOGGER.error("Failed to open CurseForge project", e);
@@ -1736,7 +1756,7 @@ public class ModListDiffDialog extends JFrame {
         if (info == null || info.projectUrl == null) return;
         try {
             if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().browse(new URI(info.projectUrl));
+                LinksHelper.browse(new URI(info.projectUrl));
             }
         } catch (Exception e) {
             CrashAssistantApp.LOGGER.error("Failed to open Modrinth project", e);

@@ -11,25 +11,35 @@ public interface UploadingApi {
     /**
      * Uploads a log to the service
      * 
+     * @param logName The name of the log
      * @param text The log text to upload
      * @param onProgressChanged Callback function that will be called when upload progress changes
      * @return A CompletableFuture that will complete with the response containing the URL of the uploaded log
      */
-    CompletableFuture<UploadLogResponse> uploadLog(String text, Consumer<Integer> onProgressChanged);
+    CompletableFuture<UploadLogResponse> uploadLog(String logName, String text, Consumer<Integer> onProgressChanged);
     
     /**
      * Uploads a log to the service without progress tracking
      * 
+     * @param logName The name of the log
      * @param text The log text to upload
      * @return A CompletableFuture that will complete with the response containing the URL of the uploaded log
      */
-    CompletableFuture<UploadLogResponse> uploadLog(String text);
-    
+    CompletableFuture<UploadLogResponse> uploadLog(String logName, String text);
+
     /**
-     * Gets problem analysis for a log
-     * 
-     * @param logUrl The URL of the uploaded log
-     * @return A CompletableFuture that will complete with the response containing the problems found in the log
+     * Deletes a log from the service
+     *
+     * @param logId The ID of the log to delete
+     * @param token The deletion token
+     * @return A CompletableFuture that will complete with the result of the deletion
      */
-    CompletableFuture<LogAnalysisResponse> getProblemsAnalysis(String logUrl);
+    CompletableFuture<LogDeletionResponse> deleteLog(String logId, String token);
+    /**
+     * Deletes multiple logs from the service
+     *
+     * @param logs The list of logs to delete
+     * @return A CompletableFuture that will complete with the result of the bulk deletion
+     */
+    CompletableFuture<BulkLogDeletionResponse> bulkDeleteLogs(java.util.List<dev.kostromdan.mods.crash_assistant.app.utils.UploadedLog> logs);
 }

@@ -5,14 +5,11 @@ import dev.kostromdan.mods.crash_assistant.app.exceptions.DeclinedException;
 import dev.kostromdan.mods.crash_assistant.app.exceptions.UploadException;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.*;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.crash_reasons.log.OutOfMemoryError;
+import dev.kostromdan.mods.crash_assistant.app.logs_analyser.crash_reasons.log.ScriptedAnalysis;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.hs_err_parser.HsErrParser;
 import dev.kostromdan.mods.crash_assistant.app.logs_analyser.hs_err_parser.HsErrParsingResult;
-import dev.kostromdan.mods.crash_assistant.app.utils.ClipboardUtils;
-import dev.kostromdan.mods.crash_assistant.app.utils.FileUtils;
-import dev.kostromdan.mods.crash_assistant.app.utils.IntelCorruptedProcessorChecker;
-import dev.kostromdan.mods.crash_assistant.app.utils.TrustedDomainsHelper;
+import dev.kostromdan.mods.crash_assistant.app.utils.*;
 import dev.kostromdan.mods.crash_assistant.app.utils.uploading_apis.ApiProvider;
-import dev.kostromdan.mods.crash_assistant.app.utils.uploading_apis.UploadLogResponse;
 import dev.kostromdan.mods.crash_assistant.common_config.config.CrashAssistantConfig;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LanguageProvider;
 import dev.kostromdan.mods.crash_assistant.common_config.lang.LinksProvider;
@@ -31,6 +28,7 @@ import java.time.Instant;
 import java.util.*;
 import java.util.List;
 import java.util.Timer;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -46,8 +44,6 @@ public class ControlPanel {
     public final UploadAllButton uploadAllButton;
     public final JButton requestHelpButton;
     private JButton showLogsToggleButton;
-    private final boolean enableSimpleModeButton;
-    private final Runnable simpleModeAction;
     private final boolean modListInitiallyVisible;
     private JPanel modListContainer;
     private String generatedMsg = null;
@@ -56,8 +52,6 @@ public class ControlPanel {
 
     public ControlPanel(FileListPanel fileListPanel, boolean enableSimpleModeButton, Runnable simpleModeAction) {
         this.fileListPanel = fileListPanel;
-        this.enableSimpleModeButton = enableSimpleModeButton;
-        this.simpleModeAction = simpleModeAction;
 
         panel = new JPanel(new BorderLayout());
 
@@ -67,7 +61,14 @@ public class ControlPanel {
         boolean modListEnabled = CrashAssistantConfig.getBoolean("modpack_modlist.enabled");
         modListInitiallyVisible = modListEnabled;
         if (modListEnabled) {
-            modListLabel = new JLabel(LanguageProvider.get("gui.modlist_loading"));
+            modListLabel = new JLabel(LanguageProvider.get("gui.modlist_loading")) {
+                @Override
+                public Dimension getPreferredSize() {
+                    Dimension d = super.getPreferredSize();
+                    d.width += 4; // Add extra margin to compensate for scaling rounding issues (e.g. at 125% DPI)
+                    return d;
+                }
+            };
             // Add a bit of left padding to the detected mods text for better spacing
             modListLabel.setBorder(BorderFactory.createEmptyBorder(0, 5, 0, 0));
             modListLabel.setMaximumSize(modListLabel.getPreferredSize());
@@ -113,11 +114,12 @@ public class ControlPanel {
                 SwingUtilities.invokeLater(() -> {
                     double lestTime = (CrashAssistantApp.terminatedProcessesLocationEndTime - Instant.now().toEpochMilli() + 100) / 1000.0D;
                     uploadAllButton.setText(LanguageProvider.get("gui.upload_all_button_delayed")
-                            .replaceAll("\\$SECONDS\\$", String.format("%.3f", lestTime)));
+                            .replaceAll("\\$SECONDS\\$", String.format("%.0f", lestTime)));
 
                     if (Instant.now().toEpochMilli() >= CrashAssistantApp.terminatedProcessesLocationEndTime + 100) {
                         uploadAllButton.setText(LanguageProvider.get("gui.upload_all_button"));
                         uploadAllButton.setEnabled(true);
+                        uploadAllButton.requestFocusInWindow();
                         uploadAllButton.setPreferredSize(uploadAllButton.getPreferredSize());
                         CrashAssistantGUI.resize();
 
@@ -152,7 +154,9 @@ public class ControlPanel {
         gbc.insets = new Insets(3, 0, 0, 0);
         bottomPanel.add(uploadAllButton, gbc);
 
-        requestHelpButton = new JButton(LanguageProvider.get("gui.request_help_button"));
+        String formulationType = CrashAssistantConfig.get("general.formulation_type");
+        String suffix = formulationType.equalsIgnoreCase("GITHUB") ? ".github" : "";
+        requestHelpButton = new JButton(LanguageProvider.get("gui.request_help_button" + suffix));
         customizeButton(requestHelpButton, "request_help");
         requestHelpButton.addActionListener(e -> requestHelp());
         requestHelpButton.setToolTipText(PlatformHelp.getActualHelpLink());
@@ -278,7 +282,7 @@ public class ControlPanel {
         URI uri = new URI(link);
         if (isInsideTrustedDomainsWarning) return;
         if (TrustedDomainsHelper.isTrustedTopDomain(uri)) {
-            Desktop.getDesktop().browse(new URI(link));
+            LinksHelper.browse(new URI(link));
             return;
         }
         String creatorWarning = "";
@@ -301,7 +305,7 @@ public class ControlPanel {
             if (e.getEventType() == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) {
                 try {
                     URI clickedUri = e.getURL().toURI();
-                    Desktop.getDesktop().browse(clickedUri);
+                    LinksHelper.browse(clickedUri);
                     if (clickedUri.toString().equals(link)) {
                         warningDialog.dispose();
                     }
@@ -315,13 +319,35 @@ public class ControlPanel {
         Object result = optionPane.getValue();
         isInsideTrustedDomainsWarning = false;
         if (result == null || !result.equals(JOptionPane.YES_OPTION)) return;
-        Desktop.getDesktop().browse(new URI(link));
+        LinksHelper.browse(new URI(link));
     }
 
 
-    private void showModList() {
+    public static void showModListDiff(Window parent) {
         stopMovingToTop = true;
-        ModListDiffDialog.showDialog(dialog);
+        ModListDiffDialog.showDialog(parent);
+    }
+
+    private void showModList() {
+        showModListDiff(dialog);
+    }
+
+    private void checkAndStartUploading(boolean startUploading) {
+        for (FilePanel panel : fileListPanel.getFilePanelList()) {
+            while (!panel.isUploadButtonEnabled() && (panel.getLastError() != null || panel.isWaiting())) {
+                if (panel.isWaiting()) {
+                    panel.setWaiting(false);
+                    panel.setUploadButtonEnabled(true);
+                    continue;
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            if (startUploading) panel.uploadFile(false);
+        }
     }
 
     private void uploadAllFiles() {
@@ -330,21 +356,25 @@ public class ControlPanel {
         new Thread(() -> {
             if (generatedMsg == null) {
                 uploadAllButton.setText(LanguageProvider.get("gui.uploading"));
-                for (FilePanel panel : fileListPanel.getFilePanelList()) {
-                    while (!panel.isUploadButtonEnabled() && (panel.getLastError() != null || panel.isWaiting())) {
-                        if (panel.isWaiting()) {
-                            panel.setWaiting(false);
-                            panel.setUploadButtonEnabled(true);
-                            continue;
-                        }
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
-                        }
+
+                checkAndStartUploading(false);
+
+                CompletableFuture<String> modlistDiffFuture = null;
+                if (CrashAssistantConfig.getBoolean("modpack_modlist.enabled")) {
+                    ModListDiff modListDiff = ModListDiff.getDiff(true);
+                    ModListDiffStringBuilder diffStringBuilder = modListDiff.generateDiffMsg(true);
+                    String modlistDiffText = diffStringBuilder.toText();
+                    String modListDiffAnsi = diffStringBuilder.toAnsi();
+                    int lineCount = modlistDiffText.length() - modlistDiffText.replace("\n", "").length();
+
+                    if (shouldUploadModListDiff(0, modListDiffAnsi.length(), lineCount)) {
+                        modlistDiffFuture = uploadModlistDiff(modlistDiffText);
                     }
-                    panel.uploadFile(false);
                 }
+                final CompletableFuture<String> finalModlistDiffFuture = modlistDiffFuture;
+
+                checkAndStartUploading(true);
+
                 outerLoop:
                 while (true) {
                     if (fileListPanel.getFilePanelList().isEmpty()) {
@@ -355,18 +385,19 @@ public class ControlPanel {
                         Log log = filePanel.getLog();
                         if (filePanel.getLastError() != null &&
                                 !(filePanel.getLastError() instanceof UploadException && filePanel.getLastError().getMessage().startsWith("Crash Assistant log"))) {
-                            String message = LanguageProvider.get("gui.failed_to_upload_file") + " \"" + log.getPath() + "\": " + filePanel.getLastError();
-                            if (filePanel.getLastError() instanceof DeclinedException) {
-                                message = filePanel.getLastError().getMessage();
+                            if (!(filePanel.getLastError() instanceof DeclinedException)) {
+                                synchronized (FilePanel.uploadErrorDialogLock) {
+                                    String message = LanguageProvider.get("gui.failed_to_upload_file") + " \"" + log.getPath() + "\": " + filePanel.getLastError();
+                                    JOptionPane.showMessageDialog(
+                                            panel,
+                                            message,
+                                            LanguageProvider.get("gui.failed_to_upload_file") + "!",
+                                            JOptionPane.ERROR_MESSAGE
+                                    );
+                                }
                             }
-                            JOptionPane.showMessageDialog(
-                                    panel,
-                                    message,
-                                    LanguageProvider.get("gui.failed_to_upload_file") + "!",
-                                    JOptionPane.ERROR_MESSAGE
-                            );
                             uploadAllButton.setText(LanguageProvider.get("gui.error"));
-                            CrashAssistantGUI.highlightButton(uploadAllButton, new Color(255, 100, 100), 2600);
+                            CrashAssistantGUI.highlightButton(uploadAllButton, ControlPanel.deserializeColor(CrashAssistantConfig.get("gui_customisation.blinking_button_error_color"), new Color(255, 100, 100)), 2600);
 
                             new Timer().schedule(
                                     new TimerTask() {
@@ -374,6 +405,7 @@ public class ControlPanel {
                                         public void run() {
                                             uploadAllButton.setText(LanguageProvider.get("gui.upload_all_button"));
                                             uploadAllButton.setEnabled(true);
+                                            uploadAllButton.requestFocusInWindow();
                                         }
                                     },
                                     3000
@@ -394,7 +426,7 @@ public class ControlPanel {
 
                     }
                 }
-                generateMsg();
+                generateMsg(finalModlistDiffFuture);
             }
 
             String warningMsg = CrashAssistantConfig.get("generated_message.warning_after_upload_all_button_press", true);
@@ -406,13 +438,14 @@ public class ControlPanel {
                 ClipboardUtils.copy(generatedMsg);
             }
             uploadAllButton.setText(LanguageProvider.get("gui.copied"));
-            CrashAssistantGUI.highlightButton(uploadAllButton, new Color(100, 255, 100), buttonHighLightTime - 400);
+            CrashAssistantGUI.highlightButton(uploadAllButton, ControlPanel.deserializeColor(CrashAssistantConfig.get("gui_customisation.blinking_button_success_color"), new Color(100, 255, 100)), buttonHighLightTime - 400);
             new Timer().schedule(
                     new TimerTask() {
                         @Override
                         public void run() {
                             uploadAllButton.setText(LanguageProvider.get("gui.upload_all_finished_button"));
                             uploadAllButton.setEnabled(true);
+                            uploadAllButton.requestFocusInWindow();
                         }
                     },
                     buttonHighLightTime
@@ -420,12 +453,9 @@ public class ControlPanel {
         }).start();
     }
 
-    public void generateMsg() {
-        StringBuilder sb = new StringBuilder();
-        sb.append(CrashAssistantGUI.getTitleCrashedText(true)).append(LanguageProvider.getMsgLang("msg.crashed").replace("$UPLOAD_TO$", CrashAssistantGUI.getUploadToLink())).append("\n");
-        if (!CrashAssistantConfig.get("generated_message.text_under_crashed").toString().isEmpty()) {
-            sb.append(CrashAssistantConfig.get("generated_message.text_under_crashed", true)).append("\n");
-        }
+    public void generateMsg(CompletableFuture<String> modlistDiffFuture) {
+        List<String> logs = new ArrayList<>();
+
         boolean kubeJSPosted = false;
         List<Log> kubeJSPanelList = new ArrayList<>();
         for (FilePanel panel : fileListPanel.getFilePanelList()) {
@@ -439,72 +469,123 @@ public class ControlPanel {
             }
             kubeJSPanelList.add(log);
         }
-        List<String> logs = new ArrayList<>();
+
         for (FilePanel panel : fileListPanel.getFilePanelList()) {
             Log log = panel.getLog();
+
             if (log.getName().startsWith("KubeJS: ")) {
                 if (kubeJSPosted) continue;
 
                 if (!kubeJSPanelList.isEmpty()) {
                     kubeJSPosted = true;
+                    String linkPattern = CrashAssistantConfig.get("generated_message.link_notification_pattern", false);
                     logs.add("KubeJS: " +
                             kubeJSPanelList.stream()
-                                    .map(kubeJSLog -> "[" + kubeJSLog.getFileName() + "](<" + kubeJSLog.getLinkToUploadedFirstLines() + ">)")
+                                    .map(kubeJSLog -> linkPattern.replace("$TEXT$", kubeJSLog.getFileName()).replace("$LINK$", kubeJSLog.getLinkToUploadedFirstLines()))
                                     .collect(Collectors.joining(" / "))
                     );
                     continue;
                 }
             }
+
             if (log.getType() == LogType.CRASH_ASSISTANT && !KnownCrashReasonMessage.getAllMessages().isEmpty() && !CrashAssistantConfig.getBoolean("generated_message.put_analysis_result_to_message")) {
                 logs.add(formatSingleLogMessage(log) + LanguageProvider.getMsgLang("msg.found_potential_crash_reason")
                         .replaceAll("\\$COUNT\\$", Integer.toString(KnownCrashReasonMessage.getUniqueMessages().size())));
                 continue;
             }
+
             if (log.getLinkToUploadedLastLines() == null) {
                 logs.add(formatSingleLogMessage(log));
             } else {
-                logs.add(panel.getMessageWithBothLinks(true));
+                logs.add(formatSplitLogMessage(panel, log));
             }
         }
+
         if (!LogsList.isLauncherLogExist() && FileUtils.isCurseForgeEnv()) {
             logs.add(LanguageProvider.getMsgLang("msg.skip_launcher"));
         }
+
+        intelCheck:
         try {
-            if (CrashAssistantConfig.getBoolean("generated_message.intel_corrupted_notification") && IntelCorruptedProcessorChecker.isAffectedProcessor()) {
+            if (CrashAssistantConfig.getBoolean("generated_message.intel_corrupted_notification")) {
+                if (!IntelCorruptedProcessorChecker.isAffectedProcessor()) break intelCheck;
                 String model = IntelCorruptedProcessorChecker.extractModel();
-                logs.add("[" + model + LanguageProvider.getMsgLang("msg.intel_corrupted_notification") + "](<" + LinksProvider.INTEL_CHIP_BUG_FAQ.getLink() + ">)");
+                String linkPattern = CrashAssistantConfig.get("generated_message.link_notification_pattern", false);
+                logs.add(linkPattern
+                        .replace("$TEXT$", model + LanguageProvider.getMsgLang("msg.intel_corrupted_notification"))
+                        .replace("$LINK$", LinksProvider.INTEL_CHIP_BUG_FAQ.getLink()));
             }
         } catch (Exception e) {
             CrashAssistantApp.LOGGER.error("Error while checking IntelCorruptedProcessor", e);
         }
 
-        sb.append(ModListDiff.getFilePrefix());
-        if (CrashAssistantConfig.getBoolean("generated_message.one_line_logs")) {
-            sb.append(String.join("   |   ", logs));
-        } else {
-            sb.append(String.join("\n" + ModListDiff.getFilePrefix(), logs));
+        piracyCheck:
+        try {
+            if (CrashAssistantConfig.getBoolean("generated_message.piracy_notification")) {
+                UUIDCheckStatus result = UUIDUtils.waitAndGetStatus();
+                String message = null;
+                switch (result) {
+                    case LICENSED:
+                        break piracyCheck;
+                    case PIRACY_OR_OFFLINE:
+                        message = LanguageProvider.getMsgLang("msg.piracy_notification");
+                        break;
+                    default:
+                        message = LanguageProvider.getMsgLang("msg.piracy_notification_unclear");
+                        break;
+                }
+                String uuid = UUIDUtils.getUUID();
+                if (uuid != null) {
+                    String linkPattern = CrashAssistantConfig.get("generated_message.link_notification_pattern", false);
+                    logs.add(linkPattern
+                            .replace("$TEXT$", message)
+                            .replace("$LINK$", "https://mcuuid.net/?q=" + uuid));
+                } else {
+                    logs.add(message);
+                }
+            }
+        } catch (Exception e) {
+            CrashAssistantApp.LOGGER.error("Error while checking IntelCorruptedProcessor", e);
         }
-        sb.append("\n");
 
+        String header = CrashAssistantGUI.getTitleCrashedText(true) +
+                LanguageProvider.getMsgLang("msg.crashed").replace("$UPLOAD_TO$", CrashAssistantGUI.getUploadToLink()) + "\n";
+        String textUnderCrashed = CrashAssistantConfig.get("generated_message.text_under_crashed", true);
+        if (!textUnderCrashed.isEmpty()) textUnderCrashed += "\n";
+
+        String prefix = ModListDiff.getFilePrefix();
+
+        String separator = CrashAssistantConfig.get("generated_message.logs_separator", true)
+                .replace("$PREFIX$", prefix);
+
+        String joinedLogs = String.join(separator, logs);
+
+
+        StringBuilder problematicFrame = new StringBuilder();
         if (CrashAssistantConfig.getBoolean("generated_message.put_problematic_frame_to_message")) {
             Optional<HsErrParsingResult> parsingResult = HsErrParser.getCachedHsErrParsingResult();
             if (parsingResult.isPresent() && parsingResult.get().getProblematicFrameFullString().isPresent()) {
-                sb.append("```java\n");
-                sb.append(parsingResult.get().getProblematicFrameFullString().get());
-                sb.append("\n```");
+                String framePattern = CrashAssistantConfig.get("generated_message.problematic_frame_pattern", true);
+                problematicFrame.append(framePattern.replace("$CONTENT$", parsingResult.get().getProblematicFrameFullString().get()));
             }
         }
+
+        StringBuilder analysisResult = new StringBuilder();
         if (!KnownCrashReasonMessage.getAllMessages().isEmpty() && CrashAssistantConfig.getBoolean("generated_message.put_analysis_result_to_message")) {
             ModListDiffStringBuilder analysis_sb = new ModListDiffStringBuilder();
             HashMap<KnownCrashReason, List<Log>> reasonToLogs = KnownCrashReasonMessage.getUniqueMessages();
-            if (!sb.toString().endsWith("\n")) {
-                sb.append("\n");
-            }
+
             analysis_sb.append(LanguageProvider.getMsgLang("msg.found_analysis_1"), false);
             analysis_sb.append(Integer.toString(reasonToLogs.size()), "blue", false);
             analysis_sb.append(LanguageProvider.getMsgLang("msg.found_analysis_2"));
 
+            int scriptedResultsCount = (int) KnownCrashReasonMessage.getAllMessages().stream()
+                    .filter(msg -> msg.getReason() instanceof ScriptedAnalysis)
+                    .count();
+
             for (Map.Entry<KnownCrashReason, List<Log>> entry : reasonToLogs.entrySet()) {
+                if (entry.getKey() instanceof ScriptedAnalysis) continue;
+
                 analysis_sb.append(entry.getKey().getClass().getSimpleName(), "blue", false);
                 analysis_sb.append(LanguageProvider.getMsgLang("msg.found_analysis_in") + entry.getValue().stream()
                         .map(Log::getFileName)
@@ -512,58 +593,115 @@ public class ControlPanel {
                 if (entry.getKey() instanceof OutOfMemoryError) {
                     analysis_sb.append(LanguageProvider.getMsgLang("warnings_common.memory_args").replace("$CURRENT_MEMORY_ARGS$", ""), false);
                     analysis_sb.append("Xms: ", false);
-                    analysis_sb.append(CrashAssistantApp.parentXms, "red", false);
+                    analysis_sb.append(CrashAssistantApp.minecraftXms, "red", false);
                     analysis_sb.append(", Xmx: ", false);
-                    analysis_sb.append(CrashAssistantApp.parentXmx, "green", false);
+                    analysis_sb.append(CrashAssistantApp.minecraftXmx, "green", false);
                     analysis_sb.append(", systemRAM: ", false);
                     analysis_sb.append(CrashAssistantApp.systemRAM, "blue");
                     analysis_sb.append("");
                 }
             }
-
-            sb.append(analysis_sb.toAnsi(true).trim());
-        }
-        if (CrashAssistantConfig.getBoolean("modpack_modlist.enabled")) {
-            sb.append("\n");
-            ModListDiff modListDiff = ModListDiff.getDiff(true);
-            ModListDiffStringBuilder diffStringBuilder = modListDiff.generateDiffMsg(true);
-            String modlistDIff = diffStringBuilder.toText();
-            String modListDiffAnsi = diffStringBuilder.toAnsi();
-            int lineCount = modlistDIff.length() - modlistDIff.replace("\n", "").length();
-            if (sb.length() + modListDiffAnsi.length() >= 1650 || lineCount > 15 ||
-                    (PlatformHelp.isLinkDefault() && PlatformHelp.platform == PlatformHelp.FORGE && lineCount > 3)) {
-                try {
-                    String link = uploadModlistDiff(modlistDIff);
-                    sb.append(ModListDiff.getFilePrefix());
-                    sb.append(ModListDiff.getFirstString(true, true, link));
-                    sb.append("\n```");
-                    if (CrashAssistantConfig.getBoolean("generated_message.color_message")) {
-                        sb.append("ansi\n");
-                        sb.append(LanguageProvider.getMsgLang("gui.modlist_changed_label_msg")
-                                .replace("$ADDED_MODS_COUNT$", AnsiColor.GREEN.getColorPrefix() + modListDiff.getAddedMods().size() + AnsiColor.postfix)
-                                .replace("$REMOVED_MODS_COUNT$", AnsiColor.RED.getColorPrefix() + modListDiff.getRemovedMods().size() + AnsiColor.postfix)
-                                .replace("$UPDATED_MODS_COUNT$", AnsiColor.BLUE.getColorPrefix() + modListDiff.getUpdatedMods().size() + AnsiColor.postfix));
-                    } else {
-                        sb.append("\n");
-                        sb.append(LanguageProvider.getMsgLang("gui.modlist_changed_label_msg")
-                                .replace("$ADDED_MODS_COUNT$", Integer.toString(modListDiff.getAddedMods().size()))
-                                .replace("$REMOVED_MODS_COUNT$", Integer.toString(modListDiff.getRemovedMods().size()))
-                                .replace("$UPDATED_MODS_COUNT$", Integer.toString(modListDiff.getUpdatedMods().size())));
-                    }
-                    sb.append("\n```");
-                } catch (ExecutionException | InterruptedException | UploadException e) {
-                    CrashAssistantApp.LOGGER.error("Failed to upload modlist diff message", e);
-                    sb.append(modListDiffAnsi);
-                }
-            } else {
-                sb.append(modListDiffAnsi);
+            if (scriptedResultsCount > 0) {
+                analysis_sb.append(LanguageProvider.getMsgLang("msg.scripted_analysis"), "blue", false);
+                analysis_sb.append(": " + scriptedResultsCount + " " + LanguageProvider.getMsgLang("msg.scripted_analysis_results"));
+            }
+            String ansiAnalysis = analysis_sb.toAnsi(true).trim();
+            if (!ansiAnalysis.isEmpty()) {
+                if (!problematicFrame.toString().isEmpty()) analysisResult.append("\n");
+                analysisResult.append(ansiAnalysis);
             }
         }
-        generatedMsg = sb.toString();
+
+
+        String finalStructure = CrashAssistantConfig.get("generated_message.message_structure", false);
+        String partialMsg = finalStructure
+                .replace("$HEADER$", header)
+                .replace("$TEXT_UNDER_CRASHED$", textUnderCrashed)
+                .replace("$PREFIX$", prefix)
+                .replace("$LOGS$", joinedLogs)
+                .replace("$PROBLEMATIC_FRAME$", problematicFrame.toString())
+                .replace("$ANALYSIS_RESULT$", analysisResult.toString());
+
+        StringBuilder modListDiffContent = new StringBuilder();
+        if (CrashAssistantConfig.getBoolean("modpack_modlist.enabled")) {
+            ModListDiff modListDiff = ModListDiff.getDiff(true);
+            ModListDiffStringBuilder diffStringBuilder = modListDiff.generateDiffMsg(true);
+            String modlistDiffText = diffStringBuilder.toText();
+            String modListDiffAnsi = diffStringBuilder.toAnsi();
+            int lineCount = modlistDiffText.length() - modlistDiffText.replace("\n", "").length();
+
+            int currentMsgLength = partialMsg.replace("$MODLIST_DIFF$", "").length();
+
+            if (modlistDiffFuture != null || shouldUploadModListDiff(currentMsgLength, modListDiffAnsi.length(), lineCount)) {
+                try {
+                    if (modlistDiffFuture == null) {
+                        modlistDiffFuture = uploadModlistDiff(modlistDiffText);
+                    }
+                    String link = modlistDiffFuture.get();
+
+                    String summaryMsgKey = "gui.modlist_changed_label_msg";
+                    String summaryContent;
+                    if (CrashAssistantConfig.getBoolean("generated_message.color_message")) {
+                        summaryContent = LanguageProvider.getMsgLang(summaryMsgKey)
+                                .replace("$ADDED_MODS_COUNT$", AnsiColor.GREEN.getColorPrefix() + modListDiff.getAddedMods().size() + AnsiColor.postfix)
+                                .replace("$REMOVED_MODS_COUNT$", AnsiColor.RED.getColorPrefix() + modListDiff.getRemovedMods().size() + AnsiColor.postfix)
+                                .replace("$UPDATED_MODS_COUNT$", AnsiColor.BLUE.getColorPrefix() + modListDiff.getUpdatedMods().size() + AnsiColor.postfix);
+                    } else {
+                        summaryContent = LanguageProvider.getMsgLang(summaryMsgKey)
+                                .replace("$ADDED_MODS_COUNT$", Integer.toString(modListDiff.getAddedMods().size()))
+                                .replace("$REMOVED_MODS_COUNT$", Integer.toString(modListDiff.getRemovedMods().size()))
+                                .replace("$UPDATED_MODS_COUNT$", Integer.toString(modListDiff.getUpdatedMods().size()));
+                    }
+
+                    String pattern = CrashAssistantConfig.get("generated_message.ansi_block_pattern", false);
+                    String filePrefix = ModListDiff.getFilePrefix();
+                    String firstString = ModListDiff.getFirstString(true, true, link);
+
+                    modListDiffContent.append("\n");
+                    modListDiffContent.append(pattern
+                            .replace("$PREFIX$", filePrefix)
+                            .replace("$HEADER$", firstString)
+                            .replace("$CONTENT$", summaryContent));
+
+                } catch (ExecutionException | InterruptedException | UploadException e) {
+                    CrashAssistantApp.LOGGER.error("Failed to upload modlist diff message", e);
+                    if (modListDiffContent.length() == 0) modListDiffContent.append("\n");
+                    modListDiffContent.append(modListDiffAnsi);
+                }
+            } else {
+                if (modListDiffContent.length() == 0) modListDiffContent.append("\n");
+                modListDiffContent.append(modListDiffAnsi);
+            }
+        }
+
+        generatedMsg = partialMsg
+                .replace("$MODLIST_DIFF$", modListDiffContent.toString());
+
+        CrashAssistantApp.LOGGER.info("Generated message successfully:\n\n\n" + generatedMsg + "\n\n\n");
     }
 
+
     public static String formatSingleLogMessage(Log log) {
-        return log.getParentName() + "[" + log.getFileName() + "](<" + log.getLinkToUploadedFirstLines() + ">)";
+        String pattern = CrashAssistantConfig.get("generated_message.log_line_pattern", true);
+        return pattern
+                .replace("$LOG_NAME$", log.getParentName())
+                .replace("$FILE_NAME$", log.getFileName())
+                .replace("$LINK$", log.getLinkToUploadedFirstLines());
+    }
+
+    public static String formatSplitLogMessage(FilePanel panel, Log log) {
+        String pattern = CrashAssistantConfig.get("generated_message.log_line_split_pattern", true);
+        return pattern
+                .replace("$LOG_NAME$", log.getParentName())
+                .replace("$FILE_NAME$", log.getFileName())
+                .replace("$LINK_FIRST_LINES$", log.getLinkToUploadedFirstLines())
+                .replace("$LINK_LAST_LINES$", log.getLinkToUploadedLastLines())
+                .replace("$TOO_BIG_REASONS$", panel.getTooBigReasons(true));
+    }
+
+    private static boolean shouldUploadModListDiff(int currentMsgLength, int diffLength, int lineCount) {
+        return currentMsgLength + diffLength >= 1650 || lineCount > 15 ||
+                (PlatformHelp.isLinkDefault() && PlatformHelp.platform == PlatformHelp.FORGE && lineCount > 3);
     }
 
     public static void showUploadAllButtonWarning(String warningMsg) {
@@ -581,19 +719,25 @@ public class ControlPanel {
         dialog.setVisible(true);
     }
 
-    public static String uploadModlistDiff(String diff) throws ExecutionException, InterruptedException, UploadException {
-        UploadLogResponse response = ApiProvider.getMcLogsClient().uploadLog(diff).get();
-        response.setClient(ApiProvider.getMcLogsClient());
-
-        if (response.isSuccess()) {
-            return CrashAssistantGUI.transformLink(response.getUrl());
-        } else {
-            throw new UploadException("An error occurred when uploading modlist diff: " + response.getError());
-        }
+    public static CompletableFuture<String> uploadModlistDiff(String diff) {
+        return CompletableFuture.supplyAsync(() -> {
+            if (!PrivacyPolicyDialog.ensurePrivacyPolicyAccepted()) {
+                throw new DeclinedException(LanguageProvider.get("gui.privacy.declined"));
+            }
+            return null;
+        }).thenCompose(ignored -> ApiProvider.getMcLogsClient().uploadLog("ModList Diff", diff).thenApply(response -> {
+            if (response.isSuccess()) {
+                String finalLink = CrashAssistantGUI.transformLink(response.getUrl());
+                CrashAssistantApp.LOGGER.info("Modlist diff uploaded successfully: " + finalLink);
+                return finalLink;
+            } else {
+                throw new UploadException("An error occurred when uploading modlist diff: " + response.getError());
+            }
+        }));
     }
 
     public static String getCurrentMemoryArgsString() {
-        return "Xms: " + CrashAssistantApp.parentXms + ", Xmx: " + CrashAssistantApp.parentXmx;
+        return "Xms: " + CrashAssistantApp.minecraftXms + ", Xmx: " + CrashAssistantApp.minecraftXmx;
     }
 
     public static String getCurrentMemoryAgsMessage() {
@@ -623,6 +767,8 @@ public class ControlPanel {
         }
 
         private static String splitIntoTwoLines(String text) {
+            if (true) return text; // now we use short formulation as an experiment, so this not needed.
+
             int length = text.length();
             // Bias the midpoint about 10% toward the right
             int biasedMid = (int) (length * 0.50);
